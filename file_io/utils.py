@@ -1,0 +1,1197 @@
+# Loading / saving of files (as distinct from classes, which is higher-level)
+
+# Imports (vm_tools)
+import os
+import six
+import time
+import glob
+import h5py
+import json
+import uuid
+import shutil
+import imageio
+import tempfile
+import warnings
+import inspect
+import functools
+import subprocess
+import numpy as np
+from PIL import Image
+from scipy.io import loadmat
+from matplotlib.pyplot import imread  as _imread
+#from . import options
+
+# Soft imports for obscure or heavy modules
+try: 
+    # tqdm for fancy progress tracking
+    from tqdm import tqdm
+except ImportError: 
+    def tqdm(x): return x
+
+try:
+    # scikit-image for image resizing
+    from skimage import transform as skt
+    skimage_available = True
+except ImportError:
+    skimage_available = False
+
+try: 
+    # Gallant lab cotton candy (cloud file access)
+    import cottoncandy as cc
+    from botocore.client import Config
+    default_bucket = cc.default_bucket
+    # Longer time-outs for read
+    botoconfig = Config(connect_timeout=50, read_timeout=10*60) # 10 mins
+except:
+    # TODO: put option to fail silently into config file
+    print("Failed to import cottoncandy - no cloud interfaces available!")
+    botoconfig = None
+    default_bucket = None # This will fail... but so it goes.
+    botoconfig = None
+
+try:
+    from torch.utils.data import Dataset, DataLoader
+    from torchvision import transforms
+    torch_available = True
+except:
+    torch_available = False
+
+try:
+    import cv2 as cv
+    opencv_available = True
+except ImportError:
+    try:
+        print("cv2 import failed; attempting to import cv3!")
+        import cv3 as cv
+        opencv_available = True
+    except ImportError:
+        opencv_available = False
+
+# Parameters
+HDF_EXTENSIONS = ('.hdf', '.hf', '.hdf5', '.h5', '.hf5')
+
+# functions
+def load_image(fpath, mode='RGB'):
+    """Dead simple imread with matplotlib (only) for now. 
+
+    A placeholder for a more useful layer of abstraction.
+    """
+    im = _imread(fpath)
+    if mode=='RGB' and np.ndim(im)==3 and im.shape[2]==4:
+       # Clip alpha channel
+       im = im[:, :, :3]
+    elif mode=='RGBA':
+       raise NotImplementedError("RGBA image loading not ready yet.")
+    return im
+
+def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
+    """
+
+    Notes
+    -----
+    Defaults to loading first 100 frames. 
+    """
+    # Check for cloud path; if so, use cottoncandy for s3 access
+    path, fname = os.path.split(fpath)
+    bucket, virtual_dirs = cloud_bucket_check(path)
+    if bucket is None:
+        # No cottoncandy
+        file_name = fpath
+    else:
+        # Cottoncandy. Download from remote server.
+        cci = get_interface(bucket)
+        file_name = os.path.join(tmpdir, fname)
+        if not os.path.exists(file_name):
+            if not os.path.exists(tmpdir):
+                os.makedirs(tmpdir)
+            cci.download_to_file(os.path.join(virtual_dirs, fname), file_name)
+    # Load from local image file
+    vid = imageio.get_reader(file_name,  'ffmpeg')
+    if size is None:
+        resize_fn = lambda im: im
+    else:
+        if skimage_available:
+            resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3)
+        else:
+            raise ImportError('Please install scikit-image to be able to resize videos at load')
+    if frames is None:
+         frames = (0, vid.count_frames())
+    # Call resizing function on each frame individually to 
+    # minimize memory overhead
+    imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
+    return imstack
+
+def nifti_from_volume(vol, inputnii, sname=None):
+    import nibabel
+    outnii = nibabel.Nifti1Image(vol, np.eye(4))
+    # Update transforms in header w/ old transform (unchanged by this step)
+    outnii.set_sform(inputnii.get_sform())
+    outnii.set_qform(inputnii.get_qform())
+    outnii.update_header()
+    outnii.set_data_dtype(64)
+    if not sname is None:
+        outnii.to_filename(sname)
+    return outnii
+
+def get_interface(bucket_name=default_bucket, verbose=False, config=botoconfig):
+    """Wrapper to manage syntax diffs btw google drive & s3 interfaces
+
+    Unclear if this function is worth the trouble.
+    """
+    if bucket_name == 'gdrive':
+        cci = cc.get_interface(backend=bucket_name, verbose=verbose)
+    else:
+        cci = cc.get_interface(bucket_name=bucket_name, verbose=verbose, config=config)
+    return cci
+
+def cloud_bucket_check(path):
+    """Test whether a path refers to an amazon S3-style cloud object
+
+    Parse path into bucket + virtual directories if it is a cloud path
+    
+    Parameters
+    ----------
+    path : str
+        To specify a cloud path, `path` should be of the form:
+        'cloud:<bucket>:<virtual_dirs>'
+        OR 
+        '/s3/<bucket>/<virtual_dirs>'
+        OR
+        's3://<bucket>/<virtual_dirs>'
+        e.g. 
+        'cloud:mybucket:my/data/lives/here/'
+        OR
+        '/s3/mybucket/my/data/lives/here/'
+    """
+    if path[:6] == 'cloud:':
+        fd = path.split(':')
+        if len(fd)==3:
+            _, bucket, virtual_dirs = fd
+        elif len(fd)==2:
+            _, bucket = fd
+            virtual_dirs = ''
+        else:
+            raise Exception("Bad cloud path specified! should be cloud:<bucket>:<virtual_dirs>")
+        return bucket, virtual_dirs
+    elif path[:4] == '/s3/':
+        fd = path.split('/')
+        if len(fd)==3:
+            _, _, bucket = fd
+            virtual_dirs = ''
+        elif len(fd)==4:
+            _, _, bucket, virtual_dirs = fd
+        else:
+            _, _, bucket = fd[:3]
+            virtual_dirs = '/'.join(fd[3:])
+        return bucket, virtual_dirs        
+    elif path[:5] == 's3://':
+        fd = path[5:].split('/')
+        bucket = fd[0]
+        virtual_dirs = '/'.join(fd[1:])
+        return bucket, virtual_dirs
+
+    else:
+        return None, path
+
+def fexists(path, fname, variable_name=None):
+    """Check whether a file exists, in a file system or on the cloud
+
+    If you are checking on a cloud file, path should be of the form:
+    cloud:<bucket>:<virtual_dirs>,
+    e.g. 
+    cloud:mybucket:my/data/lives/here/
+
+    variable_name is only for cloud files. On the cloud (so far), you can only 
+    check whether a given array - a single object - exists, not the
+    hdf-like virtual path that groups multiple objects.
+    """
+    bucket, fpath = cloud_bucket_check(path)
+    if bucket is None:
+        fpath = os.path.join(path, fname)
+        file_exists = os.path.exists(fpath)
+        if variable_name is None:
+            return file_exists
+        else:
+            if not file_exists:
+                raise ValueError("Cannot check for variable_name, parent file does not exist")
+            with warnings.catch_warnings():
+                # Ignore bullshit h5py/tables warning 
+                warnings.simplefilter("ignore")
+                with h5py.File(fpath, 'r') as hf:
+                    var_exists = variable_name in hf
+            return var_exists
+    else:
+        cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
+        oname = os.path.join(fpath, fname)
+        if variable_name is None:
+            files = cloudi.glob(oname)
+            file_exists = len(files) > 0
+        else:
+            array_name = os.path.join(oname, variable_name)
+            file_exists = cloudi.exists_object(array_name)
+        return file_exists
+
+def file_array_keys(fpath):
+    """Get keys for variable stored in a file
+
+    Does NOT support cloud arrays yet.
+    """
+    fnm, ext = os.path.splitext(fpath)
+    if ext in ('.mp4',):
+        return None
+    elif ext in HDF_EXTENSIONS:
+        with h5py.File(fpath, mode='r') as hf:
+            return list(hf.keys())
+    elif ext in ('.mat'):
+        try:
+            # Try hdf first
+            with h5py.File(fpath, mode='r') as hf:
+                return list(hf.keys())
+        except:
+            # Try .mat second (loads all variables, lame)
+            d = loadmat(fpath)
+            return list(d.keys())
+    else:
+        raise ValueError("Untenable file type")
+
+def var_size(fpath, variable_name=None, cloudi=None):
+    """"""
+    path, fname = os.path.split(fpath)
+    bucket, path = cloud_bucket_check(path)
+    if bucket is None:
+        fstr, ext = os.path.splitext(fname)
+        if ext in HDF_EXTENSIONS:
+            with h5py.File(fpath, mode='r') as hf:
+                return hf[variable_name].shape
+        elif ext in '.mp4':
+            vid = imageio.get_reader(fpath,  'ffmpeg')
+            meta = vid.get_meta_data()
+            x, y = meta['size']
+            # precise, slow:
+            nf = vid.count_frames()
+            # imprecise (?), fast:
+            # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
+            return [y, x, 3, nf]
+        else:
+            raise ValueError('Only usable for hdf and mp4 files for now.')
+
+# def get_array_size(fname, axis=0):
+#     """Get total number of frames (or other quantity) in file"""
+#     pass
+
+def lsfiles(prefix, cloudi=None, keep_prefix=False):
+    """List all files with particular prefix"""
+    bucket, fpath = cloud_bucket_check(prefix)
+    if bucket is None:
+        # Standard file system
+        return glob.glob(fpath)
+    else:
+        if cloudi is None:
+            cloudi = get_interface(bucket_name=bucket, verbose=False)
+        if bucket=='gdrive':
+            path, fname = os.path.split(fpath)
+            if '*' in path:
+                raise Exception("glob syntax for multiple files does not work with google drive!")
+            files = cloudi.lsdir(path + os.path.sep)
+            if fname != '':
+                if '*' in fname:
+                    # Crude
+                    idx = fname.find('*')
+                    files_a = [f for f in files if f[:idx]==fname[:idx]]
+                    print(files_a)
+                    if fname[idx+1:] != '':
+                        n_end = len(fname)-idx-1
+                        files_b = [f for f in files if (f[-n_end:] == fname[-n_end:])]
+                        print(files_b)
+                        files = [f for f in files_a if f in files_b]
+                    else:
+                        files = files_a
+            files = [os.path.join(path, f) for f in files]
+        else:
+            files = cloudi.glob(fpath)
+        if keep_prefix:
+            if bucket=='gdrive':
+                fprefix='~/'
+            else:
+                fprefix = '/s3/'
+            files = [os.path.join(fprefix, bucket, f) for f in files]
+        return sorted(files)
+
+
+def cpfile(infile, outfile, cloudi=None, overwrite=False, tmp_file='tmp'):
+    """copy a file
+
+    Either from: 
+    file to file
+    file to google drive
+    file to s3
+    s3 to file
+    s3 to google drive (?)
+    s3 to s3 (?)
+    googledrive to file
+    google drive to google drive (?)
+    google drive to s3 (?)
+    """
+
+    inbucket, infile_ = cloud_bucket_check(infile)
+    outbucket, outfile_ = cloud_bucket_check(outfile)
+    # Generic check if outfile exists
+    if fexists(*os.path.split(outfile)) and not overwrite:
+        raise Exception("Refusing to over-write extant file %s"%outfile)
+    # Handle tmp files
+    if tmp_file=='tmp':
+        tmp_file = tempfile.mktemp(suffix='.hdf', dir='/tmp/')
+    else:
+        raise ValueError("value for tmp_file not supported!")
+    # Switch over file transfer / copy types
+    if (inbucket is None) and (outbucket is None):
+        # file to file
+        shutil.copy(infile, outfile)
+    elif (inbucket is None) and (outbucket is not None):
+        # file to google drive / s3
+        raise NotImplementedError('Requested file copy not implemented yet')
+    elif (inbucket is not None) and (outbucket is None):
+        # google drive / s3 to file
+        if os.path.splitext(outfile)[-1] not in ('.hdf', '.hf5'):
+            raise ValueError("For now, file to copy cloud files to must be an hdf file!")
+        var_names = lsfiles(infile)
+        with h5py.File(outfile, mode='w') as hf:
+            for full_obj in var_names:
+                cfpath, key = os.path.split(full_obj)
+                hf[key] = load_array(infile, key)
+
+    elif (inbucket is not None and (outbucket is not None)):
+        # google drive / s3 to google drive / s3
+        if inbucket==outbucket:
+            if cloudi is None:
+                cloudi = get_interface(bucket_name=inbucket, verbose=False)
+            cloudi.cp(infile, outfile, overwrite=overwrite)
+            return
+        # (always?) copy to local file (or temp directory, or in-memory file)
+        # then upload in second step to requested resource
+        else:
+            raise NotImplementedError('Only within-bucket copying works so far!')
+    return
+
+def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=None, **kwargs):
+    """Load named variable from file (on cloud or hdf file)
+    TO DO: huge arrays? Indices? 
+    
+    Parameters
+    ----------
+    fpath : str
+        full file name to load
+    variable_name : str
+        variable name to load from file (if applicable; ignored for movies)
+    idx : tuple
+        2-tuple, start and end indices to pull for array. ONLY selects
+        contiguous sets of indices / frames for now. `None` (default) 
+        loads full array.
+    random_wait : scalar
+        How long (in seconds) to wait before loading. Here to avoid over-
+        stressing system / network by too many simultaneous read requests.
+    kwargs : passed to load_mp4 (and potentially other future functions.)
+    """
+    path, fname = os.path.split(fpath)
+    bucket, full_path = cloud_bucket_check(path)
+    # Check for cache dir for quicker loading
+    if cache_dir is not None:
+        cache_fpath = os.path.join(cache_dir, fname)
+        if not os.path.exists(cache_fpath):
+            print('Copying file to cache directory {}'.format(cache_dir))
+            cpfile(os.path.join(full_path, fname), cache_fpath)
+        path = cache_dir
+        fpath = cache_fpath
+    # Allow optional random wait to avoid synchronous file reads
+    if random_wait > 0:
+        wait = np.random.rand() * random_wait
+        print('Waiting %0.2f seconds to load files...'%wait)
+        time.sleep(wait)
+    if bucket is None:
+        # Parse file type
+        fn, ext = os.path.splitext(fname)
+        if ext in HDF_EXTENSIONS:
+            out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+        elif ext in ('.mat',):
+            out = _load_mat_array(fpath, variable_name=variable_name, idx=idx)
+        elif ext in ('.mp4',):
+            out = load_mp4(fpath, frames=idx, **kwargs)
+    else:
+        cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
+        oname = os.path.join(full_path, fname, variable_name=variable_name)
+        out = cloudi.download_raw_array(oname)
+        if out.shape==():
+            # Map to int or float or whatever
+            out = out.reshape(1,)[0]
+    return out
+
+
+def _load_hdf_array(fpath, variable_name=None, idx=None):
+    """Load array from hdf file
+
+    Parameters
+    ----------
+    fpath : str
+        file path
+    variable_name : str
+        variable name to load
+    idx : tuple
+        (start_index, end_index) to load - only works on FIRST DIMENSION for now.
+    """
+    if variable_name is None:
+        # TODO: soften this? If only one variable exists in file, load that?
+        raise ValueError("variable_name must be specified for hdf files")
+    with warnings.catch_warnings():
+        # Ignore bullshit h5py/tables warning 
+        warnings.simplefilter("ignore")
+        with h5py.File(fpath, 'r') as hf:
+            #if not variable_name in hf: # This raises very annoying warnings, thus it's off for now
+            #    raise ValueError('array "%s" not found in %s!'%(variable_name, fpath))
+            if idx is None:
+                out = hf[variable_name][:]
+            else:
+                st, fin = idx
+                out = hf[variable_name][st:fin]
+    return out
+
+    
+def _load_mat_array(fpath, variable_name=None, idx=None):
+    """Load array from matlab .mat file
+
+    TODO: idx
+    """
+    if variable_name is None:
+        # TODO: soften this? If only one variable exists in file, load that?
+        raise ValueError("variable_name must be specified for hdf files")    
+    try:
+        # Maybe it's a just a .mat file
+        d = loadmat(fpath)
+        if not variable_name in d:
+            raise ValueError('array "%s" not found in %s!'%(variable_name, fpath))
+        return d[variable_name]
+    except: # NotImplementedError:
+        # Note: Better to catch a specific error here, but it seems the error for loadmat has changed.
+        # Now catching a generic error instead.
+        return _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+
+
+def save_arrays(path, fname, meta=None, acl='public-read', compression=True, **named_vars):
+    """"Layer of abstraction for saving files.
+
+    path : string
+        Can be a simple file path (/path/to/my/file.hdf). Alternately, if `path` 
+        begins with cloud:<bucket name>:virtual/path/, it is assumed that you 
+        want to save arrays in s3 cloud storage. This calls Anwar Nunez' 
+        cottoncandy module to upload arrays to S3 storage. 
+    fname : string
+        file name. Separate from path because I find that cleaner. So there.
+    meta : dict or None
+        Any meta-data to be stored with arrays. Converted to json, so must be json-
+        serializable.
+    acl : string
+        Only applicable if you are storing to cloud. Specifies s3 permissions for 
+        object file uploaded.
+    compression : str
+        compression string for uploading raw arrays in cottoncandy. "True" defaults
+        to different things for local (hdf) arrays and cloud arrays: hdf, 'gzip'; 
+        cloud, 'Zstd'
+    named_vars : keyword args that specify named arrays to be stored
+    
+    """
+    bucket, fpath = cloud_bucket_check(path)
+    if bucket is None:
+        if compression is True:
+            compression = 'gzip'
+        elif compression is False:
+            compression = None
+        _save_arrays_hdf(fpath, fname, meta=meta, compression=compression, **named_vars)
+    else:
+        if compression is True:
+            compression = 'Zstd'
+        elif compression is False:
+            compression = None
+        oname = os.path.join(fpath, fname)
+        _save_arrays_cloud(bucket, oname, meta=meta, acl=acl, compression=compression, **named_vars)
+    return
+
+
+def _save_arrays_hdf(path, fname, meta=None, compression='gzip', compression_arg=None, fmode='w', **arrays):
+    """Save arrays to hdf file.
+    
+    Parameters
+    ----------
+    sfile : string
+        hdf file path
+    arrays : dict of key, array pairs
+        named arrays to be stored. If a string is provided in place of an array value,
+        it is assumed that the array was too big to fit in memory and was stored in 
+        another file, which must be copied.
+    compression : str, None, or bool
+        True for default compression ('gzip'); if string, must be 'gzip' or 'lzf'
+    compression_arg : int
+        amount of compression (for compression='gzip' only). [0-9], default (in h5py) is 4 
+
+    Notes
+    -----
+    props (docdict) storage...
+    mask storage
+
+    """
+    sfile = os.path.join(path, fname)
+    with h5py.File(sfile, mode=fmode) as hf:
+        for k, v in arrays.items():
+            # Check for large file stored to disk
+            if type(v) in six.string_types and os.path.exists(v):
+                with h5py.File(v) as hftmp:
+                    # Copy dataset from one file to another. should circumvent RAM limits.
+                    h5py.h5o.copy(hftmp.id, d, hf.id, d)
+                # Remove temporary large file
+                os.unlink(v)
+            else:
+                #hf[k] = v
+                if compression_arg is not None:
+                    copts = dict(compression_opts=compression_arg)
+                else:
+                    copts = {}
+                hf.create_dataset(k, data=v, compression=compression, **copts)
+        if not meta is None:
+            # store meta-data
+            hf['meta_data'] = json.dumps(meta)
+
+
+def _save_arrays_cloud(bucket, fname, meta=None, acl='public-read', compression='Zstd', **arrays):
+    """Save arrays to hdf file.
+    
+    Parameters
+    ----------
+    bucket : string
+        bucket name in cloud
+    fname : string
+        object name in cloud (should end with .hdf, per cotton_candy conventions)
+    meta : dict or None
+        meta-data for arrays
+    acl : string
+        access control list (file permissions) for s3 object() created
+    arrays : dict of key, array pairs
+        named arrays to be stored. 
+
+    Notes
+    -----
+    props (docdict) storage...
+    mask storage
+    [what do we do about large arrays? dask arrays??]
+    """    
+    cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
+    cloudi.dict2cloud(fname, arrays, compression=compression, acl=acl)
+    # dask array for huge files?
+    if not meta is None:
+        fnm, ext = os.path.splitext(fname)
+        cloudi.upload_json(''.join([fnm, '.json']), meta)
+    return
+
+def save_dict(path, fname, tosave, mode='json'):
+    """Save a dict
+    
+    Currently `mode` can only be 'json', but there are ambitions to change this to 
+    include pickle or fancy versions of pickle
+    
+    Not recommended to have arrays as part of your dict; use other functions for that
+    """
+    bucket, fpath = cloud_bucket_check(path)
+    oname = os.path.join(fpath, fname)
+    if bucket is None:
+        # save json file
+        if mode=='json':
+            json.dump(tosave, open(oname, mode='w'))
+        else:
+            raise NotImplementedError("Only mode='json' works so far for save_dict()!")
+    else:
+        cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
+        cloudi.upload_json(oname, tosave)
+
+def load_dict(path, fname, mode='json'):
+    """Load a dictionary from a saved file. For now, only 'json'"""
+    bucket, fpath = cloud_bucket_check(path)
+    oname = os.path.join(fpath, fname)
+    if bucket is None:
+        # save json file
+        if mode=='json':
+            out = json.load(open(oname, mode='r'))
+        else:
+            raise NotImplementedError("Only mode='json' works so far for load_dict()!")
+    else:
+        cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
+        out = cloudi.download_json(oname)
+    return out
+
+def delete(path, fname, key=None, verbose=False):
+    """Delete a file or cloud object/directory of objects
+
+    if no `key` argument is provided, all arrays in fname group are deleted
+    (*this isn't working yet for regular hdf files)
+    """
+    if not fexists(path, fname):
+        raise Exception("File %s not found!"%os.path.join(path, fname))
+    bucket, fpath = cloud_bucket_check(path)
+    if bucket is None:
+        # File system. Incorporate deletion of individual keys.
+        os.unlink(os.path.join(path, fname))
+    else:
+        # Cloud
+        cloudi = get_interface(bucket_name=bucket, verbose=verbose, config=botoconfig)
+        object_stem = os.path.join(fpath, fname)
+        if key is None:
+            if object_stem[-1]=='*':
+                # Asterisk implies remove all
+                cloudi.rm(object_stem, recursive=True)
+                return
+            # Item by item for clarity
+            files = cloudi.glob(object_stem)
+            for oname in files:
+                if verbose:
+                    print("> Deleting: %s:%s"%(bucket, oname))
+                ob = cloudi.get_object(oname)
+                ob.delete()
+        else:
+            ob = cloudi.get_object(os.path.join(fpath, fname, key))
+            ob.delete()
+
+
+def _named_cloud_cache(fn, *args, **kwargs):
+    """Caching of outputs of simple functions in S3 database
+
+    Unclear if this is done right. As written, this adds two sneaky keyword arguments
+    to the function call `fn` (k)
+    for fn.  I think I want to have this function add
+    `sname` and `is_overwrite` keyword arguments to the function it decorates, 
+    but maybe not. 
+    """
+    @functools.wraps(fn)
+    def cache_fn(*args, **kwargs):
+        cpath = 'cloud:mark:cache'
+        if 'sname' in kwargs:
+            sname = kwargs.pop('sname')
+        else:
+            sname = None
+        if 'is_overwrite' in kwargs:
+            is_overwrite = kwargs.pop('is_overwrite')
+        else:
+            is_overwrite = False
+        if 'is_verbose' in kwargs:
+            is_verbose = kwargs.pop('is_verbose')
+        else:
+            is_verbose = False
+        if sname is not None:
+            if fexists(cpath, sname) and not is_overwrite:
+                if is_verbose:
+                    print('Downloading %s...'%sname)
+                oo = load_array(cpath, sname, 'data')
+                return oo
+            else:
+                #print("=== Inside wrapper, running function... ===")
+                out = fn(*args, **kwargs)
+                #print("=== Finished with function, saving some shit in %s==="%os.path.join(cpath, sname))
+                if is_verbose:
+                    print('Storing %s...'%sname)
+                save_arrays(cpath, sname, data=out)
+            return out
+        else:
+            raise Exception("sname variable not found!") # TEMP FOR DEBUGGING
+            return fn(*args, **kwargs)
+    return cache_fn
+
+def _get_kwargs(fn):
+    """Get keyword arguments w/ default values for a function as a dict
+
+    If no keyword args exist for `fn` input, returns an empty dict.
+    """
+    assert callable(fn), '{} is not a function!'.format(fn)
+    try:
+        kws = inspect.getargspec(fn)
+    except TypeError:
+        return {}
+    if kws.defaults is None:
+        return {}
+    defaults = dict(zip(kws.args[-len(kws.defaults):], kws.defaults))
+    return defaults
+
+def _cloud_cache(fn, *args, **kwargs):
+    """Caching of outputs of simple functions in S3 database (or elsewhere)
+    
+    Example usage:
+    @_cloud_cache
+    def my_fun(a, b, c=3):
+        return a * b, c**2
+    """
+    @functools.wraps(fn)
+    def cache_fn(*args, **kwargs):
+        # Defaults
+        is_verbose = True
+        cpath = options.config.get('db_dirs', 'cache_dir')
+        # Hash all inputs to save string
+        kws = _get_kwargs(fn)
+        kws.update(kwargs)
+        inputs = [str(x) for x in args] + list(kws.keys()) + [str(x) for x in kws.values()]
+        inputs = str(hash(''.join(inputs)))
+        sname = fn.__name__ + '_' + inputs.replace('-', 'n')
+        if fexists(cpath, sname):
+            if is_verbose:
+                print('Downloading %s...'%sname)
+            output_vars = [os.path.split(o)[1] for o in lsfiles(os.path.join(cpath, sname))]
+            oo = [load_array(cpath, sname, key) for key in output_vars]
+            return oo
+        else:
+            #print("=== Inside wrapper, running function... ===")
+            out = fn(*args, **kwargs)
+            #print("=== Finished with function, saving some shit in %s==="%os.path.join(cpath, sname))
+            if is_verbose:
+                print('Storing %s...'%sname)
+            out_dict = dict(('array_%02d'%i, o) for i, o in enumerate(out, 1))
+            save_arrays(cpath, sname, **out_dict)
+        return out
+    return cache_fn
+
+#######################################
+### --- Image loading functions --- ###
+#######################################
+
+def pil_loader(fpath):
+    pil_im = Image.openf(path)
+    # If alpha channel exists, get rid of it
+    bands = pil_im.getbands() # Returns, e.g., ['R', 'G', 'B', 'A']
+    if 'A' in bands:
+        # Add (white) background 
+        bg = Image.fromarray(np.ones(pil_im.size + (len(bands),), dtype=np.uint8)*255)
+        pil_im_alpha = Image.alpha_composite(bg, pil_im)
+        return pil_im_alpha.convert('RGB')
+    else:
+        return pil_im.convert('RGB')
+
+if torch_available:
+    # Transforms for data input
+    def get_xfm(scale=224, center_crop=None, tensor=True, normalize=True, **kwargs):
+        """Get pytorch transform for input images
+        
+        kwargs are meant to be optional inserts into transform sequence, inserted one by one
+        into the list (indices in list are given by dict keys) Not working yet.
+        """
+        xfmlist = []
+        if (scale is not None) and (scale is not False):
+            xfmlist.append(transforms.Scale(scale))
+        if (center_crop is not None) and (center_crop is not False):
+            xfmlist.append(transforms.CenterCrop(center_crop))
+        if (tensor is not None) and (tensor is not False):
+            xfmlist.append(transforms.ToTensor())
+        if (normalize is not None) and (normalize is not False):
+            if normalize is True:
+                # Default values from ImageNet
+                xfmlist.append(transforms.Normalize([0.485, 0.456, 0.406], [0.229, 0.224, 0.225]))
+            else:
+                # User-specified normalization values
+                xfmlist.append(transforms.Normalize(*normalize))
+        xfm = transforms.Compose(xfmlist)
+        return xfm
+
+    default_xfm = get_xfm()
+
+    class ImageList(Dataset):
+        """Class to load images with no classes / labels, for simple feature extraction"""
+        def __init__(self, images, classes=None, transform=None, target_transform=None,
+                     loader=pil_loader):
+            """Class to load images
+
+            Parameters
+            ----------
+            images : list
+                List of image file names to load
+            classes : list | array
+                
+            transform : torch transform
+                Set of operations to perform on data as it is loaded
+            """
+            if transform is None:
+                transform = default_xfm
+            if classes is None:
+                classes = np.zeros((len(images),),dtype=np.int)
+            self.imgs = list(zip(images, classes))
+            self.transform = transform
+            self.target_transform = target_transform
+            self.loader = loader
+
+        def __getitem__(self, index):
+            path, target = self.imgs[index]
+            img = self.loader(path)
+            if self.transform is not None:
+                img = self.transform(img)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
+
+            return img, target
+
+        def __len__(self):
+            return len(self.imgs)
+
+    class ImageArray(Dataset):
+        """Class to load images with no classes / labels, for simple feature extraction"""
+        def __init__(self, images, classes=None, transform=None, target_transform=None,
+                     loader=pil_loader):
+            """Class to load images
+
+            Parameters
+            ----------
+            images : array-like (possibly open hdf file)
+                size is [n, h, w, rgb] 
+                or [n, h, w]
+            classes : list | array
+                labels for each image (`n` long array or list)
+            transform : torch transform
+                Set of operations to perform on data as it is loaded
+            """
+            self.imgs = images #np.rollaxis(images, -1, 0)
+            if transform is None:
+                transform = default_xfm
+            if classes is None:
+                classes = np.zeros((len(self.imgs),),dtype=np.int)
+            self.classes = classes
+            self.transform = transform
+            self.target_transform = target_transform
+            self.loader = loader
+
+        def __getitem__(self, index):
+            
+            img = self.imgs[index]
+            if np.ndim(img)==2:
+                img = np.tile(img[:,:,np.newaxis], [1,1,3])
+            img = Image.fromarray((img*255).astype(np.uint8))
+            target = self.classes[index]
+            if self.transform is not None:
+                img = self.transform(img)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
+
+            return img, target
+
+        def __len__(self):
+            return len(self.imgs)
+
+
+    class SimpleImageFolder(Dataset):
+        """Class to load images with no classes / labels, for simple feature extraction"""
+        def __init__(self, images, transform=default_xfm, target_transform=None,
+                     loader=pil_loader):
+            """Class to load images
+
+            Parameters
+            ----------
+            images : list
+                List of image file names to load
+            transform : torch transform
+                Set of operations to perform on data as it is loaded
+                see module transforms.py
+            """
+            self.imgs = zip(images, np.zeros((len(images),),dtype=np.int))
+            self.transform = transform
+            self.target_transform = target_transform
+            self.loader = loader
+
+        def __getitem__(self, index):
+            path, target = self.imgs[index]
+            img = self.loader(path)
+            if self.transform is not None:
+                img = self.transform(img)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
+
+            return img, target
+
+        def __len__(self):
+            return len(self.imgs)
+
+    class ImageFolder(Dataset):
+        """Load images based on text file of image file names + classification categories"""
+        def __init__(self, list_file, transform=default_xfm, target_transform=None,
+                     loader=pil_loader, class_to_idx=None):
+            """Load images based on text file of image file names + classification categories
+
+            Parameters
+            ----------
+            list_file : string
+                file name for list of images to load. File should be formatted as:
+                image_file.ext <space> target_class
+                (one row per image to be loaded)
+            transform : pytorch transform series
+                series of transforms (clipping, rotation, normalization, mapping to tensor, etc)
+                to be applied to images at load time.
+            target_tranform : transformation of target
+                Map target to potential other target class
+            loader : pytorch loader
+                ...
+            class_to_idx : dict
+                dictionary to map classes to class numbers (classification target indices)
+                if not provided, attempts to read from file structure; if it fails, set to None
+            """
+            images = []
+            lines = file(list_file).read().split("\n")
+            do_class_to_idx = class_to_idx is None
+            if do_class_to_idx:
+                class_to_idx = {}
+            imgs = []
+            for l in lines:
+                if not l.strip():
+                    continue
+                fname, label_num = l.split(" ")
+                label_num = int(label_num)
+                if do_class_to_idx:
+                    try:
+                        fnComps = fname.split("/")
+                        class_name = "_".join(fnComps[-2].split("_")[:-1])
+                        class_to_idx[class_name] = label_num
+                    except:
+                        # No class_to_idx dict definable
+                        pass
+                imgs.append((fname,label_num))
+            try:
+                classes = class_to_idx.keys()
+                classes.sort(key=lambda x:class_to_idx[x])
+            except:
+                print("Failed to find class names")
+                classes = []
+            self.imgs = imgs
+            self.classes = classes
+            self.class_to_idx = class_to_idx
+            self.transform = transform
+            self.target_transform = target_transform
+            self.loader = loader
+
+        def __getitem__(self, index):
+            path, target = self.imgs[index]
+            img = self.loader(path)
+            if self.transform is not None:
+                img = self.transform(img)
+            if self.target_transform is not None:
+                target = self.target_transform(target)
+
+            return img, target
+
+        def __len__(self):
+            return len(self.imgs)
+
+
+    class HDFDataSet(Dataset):
+        """Class to load images from hdf files"""
+        def __init__(self, fname, variable_name='images', ims_per_file=None):
+            self.datasets = []
+            self.total_count = 0
+            for i, f in enumerate(hdf5_list):
+                with h5py.File(f, 'r') as hf:
+                   dataset = hf[variable_name].value
+                self.datasets.append(dataset)
+                self.total_count += len(dataset)
+
+        def __getitem__(self, index):
+            '''
+            Suppose each hdf5 file has 10000 samples
+            '''
+            dataset_index = index % 10000
+            in_dataset_index = int(index / 10000)
+            return self.datasets[dataset_index][in_dataset_index]
+
+        def __len__(self):
+            return len(self.total_count)
+
+if opencv_available:
+    def load_exr_normals(fname, xflip=True, yflip=True, zflip=True, clip=True, zero_norm_to_nan=False):
+        """Load an exr (floating point) image to surface normal array
+
+        """
+        img = cv.imread(fname, cv.IMREAD_UNCHANGED)
+        imc = img-1
+        y, z, x = imc.T
+        if xflip: 
+            x = -x
+        if yflip:
+            y = -y
+        if zflip:
+            z = -z
+        imc = np.dstack([x.T,y.T,z.T])
+        if clip:
+            imc = np.clip(imc, -1, 1)
+        if zero_norm_to_nan:
+            pass
+        return imc
+
+
+    def load_exr_zdepth(fname, thresh=1000):
+        """Load an exr (floating point) image to absolute distance array"""
+        img = cv.imread(fname, cv.IMREAD_UNCHANGED)
+        z = img[..., 0]
+        z[z > thresh] = np.nan
+        return z
+
+
+def save_movie(fname, array, fps=30, crf=0, preset='fast', codec='libx264', color_format='rgb24', is_verbose=False):
+    """Save array of images as an mp4 movie"""
+    ff = VideoEncoderFFMPEG(fname, array.shape[1:3], fps=fps, color_format=color_format, 
+                            codec=codec, preset=preset, crf=crf, is_verbose=is_verbose)
+    ff.write(array)
+    ff.stop()
+
+
+class VideoEncoderFFMPEG(object):
+    """ Base class for encoder interfaces. """
+
+    def __init__(self, fname, resolution, fps, color_format='rgb24', codec='libx264', preset='fast', crf=0, is_verbose=False):
+        """ Constructor.
+
+        Parameters
+        ----------
+        fname: str
+            File name for movie to be written.
+        resolution: tuple, len 2
+            Desired (horizontal, vertical) resolution.
+        fps: int
+            Desired refresh rate.
+        color_format: str, default 'rgb24'
+            The target color format. Set to 'gray' grayscale
+        codec: str, default 'libx264'
+            The desired video codec.
+        """
+        self.fname = fname
+        if os.path.exists(self.fname):
+            os.remove(self.fname)
+        self.resolution = resolution
+        self.fps = fps
+        self.color_format = color_format
+        self.codec = codec
+        self.preset = preset
+        self.crf = crf
+        self.is_verbose = is_verbose
+        # Business
+        ffmpeg_cmd = self._get_ffmpeg_cmd()
+        if is_verbose:
+            print('FFMPEG_cmd:', ffmpeg_cmd)
+        self.video_writer = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
+
+    def _get_ffmpeg_cmd(self):
+        """ Get the FFMPEG command to start the sub-process. """
+        size = '{}x{}'.format(self.resolution[1], self.resolution[0])
+        print('size: ', size)
+        if self.preset is None:
+            return ['ffmpeg',
+                    # -- Input -- #
+                    '-an',  # no audio
+                    '-r', str(self.fps),  # fps
+                    '-f', 'rawvideo',  # format
+                    '-s', size,  # resolution
+                    '-pix_fmt', self.color_format,  # color format
+                    '-i', 'pipe:',  # piped to stdin
+                    # -- Output -- #
+                    '-c:v', codec,  # video codec
+                    self.fname]
+        else:
+            return ['ffmpeg', '-hide_banner', '-loglevel', 'error',
+                    # -- Input -- #
+                    '-an',  # no audio
+                    '-r', str(self.fps),  # fps
+                    '-f', 'rawvideo',  # format
+                    '-s', size,  # resolution
+                    '-pix_fmt', self.color_format,  # color format
+                    '-i', 'pipe:',  # piped to stdin
+                    '-preset', self.preset,
+                    '-crf', str(self.crf),
+                    # -- Output -- #
+                    '-c:v', self.codec,  # video codec
+                    self.fname]
+
+    def write(self, img):
+        """ Write a frame to disk.
+
+        Parameters
+        ----------
+        img : array_like
+            The input frame or frames. To write multiple frames, array should be 
+            [y, x, color, time]
+        Notes
+        -----
+        Converts input images to uint8 - this could involve some loss of precision!
+        """
+        if np.ndim(img) == 4:
+            for img_ in tqdm(img):
+                self.write(img_)
+            return
+        if img.dtype in ('uint8'):
+            to_write = img
+        else:
+            if img.max() > 1:
+                # NOTE: if file has max of 100 (as in LAB converted
+                # grayscale images), this may cause aliasing (loss of precision)
+                to_write = img.astype(np.uint8)
+            else:
+                to_write = (img * 255).astype(np.uint8)
+        self.video_writer.stdin.write(to_write.tostring())
+    
+    def stop(self):
+        self.video_writer.stdin.close()
+
+
+# Stubs. Good ideas, from https://discuss.pytorch.org/t/use-of-dataset-class/1620/4
+# class MergedDataset(Dataset):
+#     """Class to load images from hdf files"""
+#     def __init__(self, hdf5_list, ims_per_file=None):
+#         self.datasets = []
+#         self.total_count = 0
+#         for i, f in enumerate(hdf5_list):
+#            h5_file = h5py.File(f, 'r')
+#            dataset = h5_file['YOUR DATASET NAME']
+#            self.datasets.append(dataset)
+#            self.total_count += len(dataset)
+
+#     def __getitem__(self, index):
+#         '''
+#         Suppose each hdf5 file has 10000 samples
+#         '''
+#         dataset_index = index % 10000
+#         in_dataset_index = int(index / 10000)
+#         return self.datasets[dataset_index][in_dataset_index]
+
+#     def __len__(self):
+#         return len(self.total_count)
+
+# class CloudHDFDataSet(Dataset):
+#   def __init__(self, cloud_paths):
+
+#       hdf5_list = [x for x in glob.glob(os.path.join(path_patients,'*.h5'))]#only h5 files
+#       print 'h5 list ',hdf5_list
+#       self.datasets = []
+#       self.datasets_gt=[]
+#       self.total_count = 0
+#       self.limits=[]
+#       for f in hdf5_list:
+#          h5_file = h5py.File(f, 'r')
+#          dataset = h5_file['data']
+#          dataset_gt = h5_file['label']
+#          self.datasets.append(dataset)
+#          self.datasets_gt.append(dataset_gt)
+#          self.limits.append(self.total_count)
+#          self.total_count += len(dataset)
+#          #print 'len ',len(dataset)
+#       #print self.limits   
+
+#   def __getitem__(self, index):
+     
+#       dataset_index=-1
+#       #print 'index ',index
+#       for i in xrange(len(self.limits)-1,-1,-1):
+#         #print 'i ',i
+#         if index>=self.limits[i]:
+#           dataset_index=i
+#           break
+#       #print 'dataset_index ',dataset_index
+#       assert dataset_index>=0, 'negative chunk'
+
+#       in_dataset_index = index-self.limits[dataset_index]
+
+#       return self.datasets[dataset_index][in_dataset_index], self.datasets_gt[dataset_index][in_dataset_index]
+
+#   def __len__(self):
+#       return self.total_count
