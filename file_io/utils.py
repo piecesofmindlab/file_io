@@ -80,8 +80,7 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
         im = _imread(fpath)
     elif loader=='PIL':
         pil_image = Image.open(fpath)
-        pil_image = pil_image.convert(mode)
-        im = numpy.array(pil_image.getdata()).reshape(pil_image.size[0], pil_image.size[1], 3)
+        im = np.array(pil_image.getdata()).reshape(pil_image.size[0], pil_image.size[1], 3)
     if mode=='RGB' and np.ndim(im)==3 and im.shape[2]==4:
        # Clip alpha channel
        im = im[:, :, :3]
