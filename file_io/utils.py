@@ -71,12 +71,17 @@ except ImportError:
 HDF_EXTENSIONS = ('.hdf', '.hf', '.hdf5', '.h5', '.hf5')
 
 # functions
-def load_image(fpath, mode='RGB'):
+def load_image(fpath, mode='RGB', loader='matplotlib'):
     """Dead simple imread with matplotlib (only) for now. 
 
     A placeholder for a more useful layer of abstraction.
     """
-    im = _imread(fpath)
+    if loader=='matplotlib':
+        im = _imread(fpath)
+    elif loader=='PIL':
+        pil_image = Image.open(fpath)
+        pil_image = pil_image.convert(mode)
+        im = numpy.array(pil_image.getdata()).reshape(pil_image.size[0], pil_image.size[1], 3)
     if mode=='RGB' and np.ndim(im)==3 and im.shape[2]==4:
        # Clip alpha channel
        im = im[:, :, :3]
@@ -756,7 +761,7 @@ def _cloud_cache(fn, *args, **kwargs):
 #######################################
 
 def pil_loader(fpath):
-    pil_im = Image.openf(path)
+    pil_im = Image.open(path)
     # If alpha channel exists, get rid of it
     bands = pil_im.getbands() # Returns, e.g., ['R', 'G', 'B', 'A']
     if 'A' in bands:
@@ -1110,7 +1115,7 @@ class VideoEncoderFFMPEG(object):
         ----------
         img : array_like
             The input frame or frames. To write multiple frames, array should be 
-            [y, x, color, time]
+            [time, y, x, color]
         Notes
         -----
         Converts input images to uint8 - this could involve some loss of precision!
@@ -1132,6 +1137,25 @@ class VideoEncoderFFMPEG(object):
     
     def stop(self):
         self.video_writer.stdin.close()
+
+
+def write_ffmpeg_images(file_pattern, output_file, fps=30, size=None, codec='libx264', preset='fast', crf=0, ):
+    """Still failing. Trying to call e.g.:
+    ffmpeg -f image2 -pattern_type glob -i '/path/to/dir/*png' -r 30 -s 500x500 -c:v libx264 -preset fast -an -crf 0 /path/to/output/my_movie.mp4
+    """
+    cmd = ['ffmpeg', 
+            '-f', 'image2',
+            '-pattern_type', 'glob', 
+            '-i', "'%s'"%file_pattern, 
+            '-r', '%d'%fps,
+            '-s', '{}x{}'.format(size[0], size[1]), 
+            '-c:v', 'libx264', 
+            '-preset', 'fast', 
+            '-an', 
+            '-crf', '%d'%crf, 
+            output_file]
+    out, err = subprocess.check_output(cmd)
+
 
 
 # Stubs. Good ideas, from https://discuss.pytorch.org/t/use-of-dataset-class/1620/4
