@@ -275,7 +275,7 @@ def var_size(fpath, variable_name=None, cloudi=None):
             nf = vid.count_frames()
             # imprecise (?), fast:
             # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
-            return [y, x, 3, nf]
+            return [nf, y, x, 3]
         else:
             raise ValueError('Only usable for hdf and mp4 files for now.')
 
@@ -1123,7 +1123,7 @@ class VideoEncoderFFMPEG(object):
             for img_ in tqdm(img):
                 self.write(img_)
             return
-        if img.dtype in ('uint8'):
+        if img.dtype in (np.uint8,):
             to_write = img
         else:
             if img.max() > 1:
