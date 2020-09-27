@@ -115,7 +115,7 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
         resize_fn = lambda im: im
     else:
         if skimage_available:
-            resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3)
+            resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
         else:
             raise ImportError('Please install scikit-image to be able to resize videos at load')
     if frames is None:
