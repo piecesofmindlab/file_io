@@ -109,8 +109,7 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
             if not os.path.exists(tmpdir):
                 os.makedirs(tmpdir)
             cci.download_to_file(os.path.join(virtual_dirs, fname), file_name)
-    # Load from local image file
-    vid = imageio.get_reader(file_name,  'ffmpeg')
+    # Prep for resizing if necessary
     if size is None:
         resize_fn = lambda im: im
     else:
@@ -118,11 +117,13 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
             resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
         else:
             raise ImportError('Please install scikit-image to be able to resize videos at load')
-    if frames is None:
-         frames = (0, vid.count_frames())
-    # Call resizing function on each frame individually to 
-    # minimize memory overhead
-    imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
+    # Load from local image file; with clause should correctly close ffmpeg instance
+    with imageio.get_reader(file_name,  'ffmpeg') as vid:
+        if frames is None:
+             frames = (0, vid.count_frames())
+        # Call resizing function on each frame individually to 
+        # minimize memory overhead
+        imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
     return imstack
 
 def nifti_from_volume(vol, inputnii, sname=None):
@@ -276,8 +277,11 @@ def var_size(fpath, variable_name=None, cloudi=None):
             # imprecise (?), fast:
             # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
             return [nf, y, x, 3]
+        elif ext in '.npy':
+            arr_memmap = np.load(fpath, mmap_mode='r')
+            return arr_memmap.shape
         else:
-            raise ValueError('Only usable for hdf and mp4 files for now.')
+            raise ValueError('Only usable for hdf, mp4, and npy files for now.')
 
 # def get_array_size(fname, axis=0):
 #     """Get total number of frames (or other quantity) in file"""
@@ -420,6 +424,14 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
             out = _load_mat_array(fpath, variable_name=variable_name, idx=idx)
         elif ext in ('.mp4',):
             out = load_mp4(fpath, frames=idx, **kwargs)
+        elif ext in ('.npy',):
+            # Assume loading whole thing is not going to kill memory if
+            # we're loading an npy file; bigger arrays should be stored
+            # as HDFs or some format that allows partial load
+            out = np.load(fpath)
+            if idx is not None:
+                out = out[idx[0]:idx[1]]
+
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
         oname = os.path.join(full_path, fname, variable_name=variable_name)
@@ -781,7 +793,8 @@ if torch_available:
         """
         xfmlist = []
         if (scale is not None) and (scale is not False):
-            xfmlist.append(transforms.Scale(scale))
+            #xfmlist.append(transforms.Scale(scale))
+            xfmlist.append(transforms.Resize(scale))
         if (center_crop is not None) and (center_crop is not False):
             xfmlist.append(transforms.CenterCrop(center_crop))
         if (tensor is not None) and (tensor is not False):
