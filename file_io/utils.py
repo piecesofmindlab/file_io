@@ -19,6 +19,7 @@ import numpy as np
 from PIL import Image
 from scipy.io import loadmat
 from matplotlib.pyplot import imread  as _imread
+import cv2
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -88,7 +89,7 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
        raise NotImplementedError("RGBA image loading not ready yet.")
     return im
 
-def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
+def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='opencv'):
     """
 
     Notes
@@ -96,6 +97,8 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
     Defaults to loading first 100 frames. 
     """
     # Check for cloud path; if so, use cottoncandy for s3 access
+    scale = 0.5
+    # TODO: Ideally pass this to the load_mp4
     path, fname = os.path.split(fpath)
     bucket, virtual_dirs = cloud_bucket_check(path)
     if bucket is None:
@@ -118,12 +121,34 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
         else:
             raise ImportError('Please install scikit-image to be able to resize videos at load')
     # Load from local image file; with clause should correctly close ffmpeg instance
-    with imageio.get_reader(file_name,  'ffmpeg') as vid:
+    if loader == 'opencv':
+        vid = cv2.VideoCapture(file_name)
         if frames is None:
-             frames = (0, vid.count_frames())
+             frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+        # Set the OpenCV video capture module counter to the appropriate frame number
+        vid.set(1,frames[0])
         # Call resizing function on each frame individually to 
         # minimize memory overhead
-        imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
+        images = []
+        for fr in range(*frames):
+            # Read frame and switch the color channels from BGR to RGB
+            ret, frame = vid.read()
+            frame = frame[...,::-1]
+            # TODO: check the ret value if the it's not true frame is empty!!
+            frame_width = vid.get(cv2.CAP_PROP_FRAME_WIDTH)
+            if frame_width > 400:
+                images.append(cv2.resize(frame,None,fx=scale,fy=scale))
+            else:
+                images.append(frame)
+        imstack = np.asarray(images)
+        vid.release()
+    elif loader == 'imageio':
+        with imageio.get_reader(file_name,  'ffmpeg') as vid:
+            if frames is None:
+                 frames = (0, vid.count_frames())
+            # Call resizing function on each frame individually to
+            # minimize memory overhead
+            imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
     return imstack
 
 def nifti_from_volume(vol, inputnii, sname=None):
