@@ -89,16 +89,40 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
        raise NotImplementedError("RGBA image loading not ready yet.")
     return im
 
+
+
+class VideoCapture(object):
+    """Tweak of opencv VideoCapture to allow working with "with" statements
+    per https://github.com/skvark/opencv-python/issues/205
+    """
+    def __init__(self, device_num):
+        self.VideoObj = cv2.VideoCapture(device_num)
+    def __enter__(self):
+        return self.VideoObj
+    def __exit__(self, type, value, traceback):
+        self.VideoObj.release()
+
 def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='opencv'):
     """
+    Parameters
+    ----------
+    fpath : string
+        path to file to load
+    frames : tuple
+        (first, last) frame to be loaded. If not specified, attempts to load 
+        first 100 frames
+    size : tuple or scalar float or None
+        desired size of output, (vertical_dim x horizontal_dim), or 
+    tmpdir : string path
+        path to download mp4 file if it initially exists in a remote location
+    loader : string
+        'opencv' or 'imageio' ImageIO is slower, clearer what it's doing...
 
     Notes
     -----
     Defaults to loading first 100 frames. 
     """
     # Check for cloud path; if so, use cottoncandy for s3 access
-    scale = 0.5
-    # TODO: Ideally pass this to the load_mp4
     path, fname = os.path.split(fpath)
     bucket, virtual_dirs = cloud_bucket_check(path)
     if bucket is None:
@@ -112,36 +136,35 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
             if not os.path.exists(tmpdir):
                 os.makedirs(tmpdir)
             cci.download_to_file(os.path.join(virtual_dirs, fname), file_name)
+    interp = cv2.INTER_AREA # TO DO: make it clearer what this is doing
+    # (bilinear, cubic spline, ...?)
     # Prep for resizing if necessary
     if size is None:
-        resize_fn = lambda im: im
-    else:
-        if skimage_available:
-            resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+        if loader=='opencv':
+            resize_fn = lambda im: im
         else:
-            raise ImportError('Please install scikit-image to be able to resize videos at load')
+            resize_fn = lambda im: im[...,::-1]
+    else:
+        if loader == 'imageio':
+            if skimage_available:
+                resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+            else:
+                raise ImportError('Please install scikit-image to be able to resize videos at load')
+        elif loader == 'opencv':
+            if isinstance(size, tuple):
+                resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
+            else:
+                resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
+                
     # Load from local image file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
-        vid = cv2.VideoCapture(file_name)
-        if frames is None:
-             frames = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
-        # Set the OpenCV video capture module counter to the appropriate frame number
-        vid.set(1,frames[0])
-        # Call resizing function on each frame individually to 
-        # minimize memory overhead
-        images = []
-        for fr in range(*frames):
-            # Read frame and switch the color channels from BGR to RGB
-            ret, frame = vid.read()
-            frame = frame[...,::-1]
-            # TODO: check the ret value if the it's not true frame is empty!!
-            frame_width = vid.get(cv2.CAP_PROP_FRAME_WIDTH)
-            if frame_width > 400:
-                images.append(cv2.resize(frame,None,fx=scale,fy=scale))
-            else:
-                images.append(frame)
-        imstack = np.asarray(images)
-        vid.release()
+        with VideoCapture(file_name) as vid:
+            if frames is None:
+                frames = (0, int(vid.get(cv2.CAP_PROP_FRAME_COUNT)))
+            vid.set(1,frames[0])
+            # Call resizing function on each frame individually to
+            # minimize memory overhead
+            imstack = np.asarray([resize_fn(vid.read()[1]) for fr in range(*frames)])
     elif loader == 'imageio':
         with imageio.get_reader(file_name,  'ffmpeg') as vid:
             if frames is None:
