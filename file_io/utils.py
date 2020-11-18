@@ -152,9 +152,9 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
                 raise ImportError('Please install scikit-image to be able to resize videos at load')
         elif loader == 'opencv':
             if isinstance(size, tuple):
-                resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
+                resize_fn = lambda im: cv2.resize(im[...,::-1], size[::-1], interpolation=interp)
             else:
-                resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
+                resize_fn = lambda im: cv2.resize(im[...,::-1], None, fx=size, fy=size, interpolation=interp)
                 
     # Load from local image file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
