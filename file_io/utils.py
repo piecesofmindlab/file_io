@@ -19,7 +19,6 @@ import numpy as np
 from PIL import Image
 from scipy.io import loadmat
 from matplotlib.pyplot import imread  as _imread
-import cv2
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -58,15 +57,10 @@ except:
     torch_available = False
 
 try:
-    import cv2 as cv
+    import cv2
     opencv_available = True
 except ImportError:
-    try:
-        print("cv2 import failed; attempting to import cv3!")
-        import cv3 as cv
-        opencv_available = True
-    except ImportError:
-        opencv_available = False
+    opencv_available = False
 
 # Parameters
 HDF_EXTENSIONS = ('.hdf', '.hf', '.hdf5', '.h5', '.hf5')
@@ -151,10 +145,13 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
             else:
                 raise ImportError('Please install scikit-image to be able to resize videos at load')
         elif loader == 'opencv':
-            if isinstance(size, tuple):
-                resize_fn = lambda im: cv2.resize(im[...,::-1], size[::-1], interpolation=interp)
+            if opencv_available:
+                if isinstance(size, tuple):
+                    resize_fn = lambda im: cv2.resize(im[...,::-1], size[::-1], interpolation=interp)
+                else:
+                    resize_fn = lambda im: cv2.resize(im[...,::-1], None, fx=size, fy=size, interpolation=interp)
             else:
-                resize_fn = lambda im: cv2.resize(im[...,::-1], None, fx=size, fy=size, interpolation=interp)
+                raise ImportError('Please install opencv to be able to resize videos at load')
                 
     # Load from local image file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
@@ -1069,7 +1066,7 @@ if opencv_available:
         """Load an exr (floating point) image to surface normal array
 
         """
-        img = cv.imread(fname, cv.IMREAD_UNCHANGED)
+        img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
         imc = img-1
         y, z, x = imc.T
         if xflip: 
@@ -1088,7 +1085,7 @@ if opencv_available:
 
     def load_exr_zdepth(fname, thresh=1000):
         """Load an exr (floating point) image to absolute distance array"""
-        img = cv.imread(fname, cv.IMREAD_UNCHANGED)
+        img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
         z = img[..., 0]
         z[z > thresh] = np.nan
         return z
