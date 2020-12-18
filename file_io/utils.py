@@ -135,13 +135,17 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
     # Prep for resizing if necessary
     if size is None:
         if loader=='opencv':
-            resize_fn = lambda im: im
-        else:
             resize_fn = lambda im: im[...,::-1]
+        else:
+            resize_fn = lambda im: im
     else:
         if loader == 'imageio':
             if skimage_available:
-                resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+                if isinstance(size, tuple):
+                    resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+                else:
+                    # float provided
+                    resize_fn = lambda im: skt.rescale(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
             else:
                 raise ImportError('Please install scikit-image to be able to resize videos at load')
         elif loader == 'opencv':
