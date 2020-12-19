@@ -96,7 +96,7 @@ class VideoCapture(object):
     def __exit__(self, type, value, traceback):
         self.VideoObj.release()
 
-def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='opencv'):
+def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='rgb', loader='opencv'):
     """
     Parameters
     ----------
@@ -111,7 +111,9 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
         path to download mp4 file if it initially exists in a remote location
     loader : string
         'opencv' or 'imageio' ImageIO is slower, clearer what it's doing...
-
+    color : string
+        'rgb', 'bgr', or 'gray'
+        'gray' converts to LAB space, keeps luminance channel, returns values from 0-100
     Notes
     -----
     Defaults to loading first 100 frames. 
@@ -134,10 +136,7 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
     # (bilinear, cubic spline, ...?)
     # Prep for resizing if necessary
     if size is None:
-        if loader=='opencv':
-            resize_fn = lambda im: im[...,::-1]
-        else:
-            resize_fn = lambda im: im
+        resize_fn = lambda im: im
     else:
         if loader == 'imageio':
             if skimage_available:
@@ -151,12 +150,27 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
         elif loader == 'opencv':
             if opencv_available:
                 if isinstance(size, tuple):
-                    resize_fn = lambda im: cv2.resize(im[...,::-1], size[::-1], interpolation=interp)
+                    resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
                 else:
-                    resize_fn = lambda im: cv2.resize(im[...,::-1], None, fx=size, fy=size, interpolation=interp)
+                    resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
             else:
                 raise ImportError('Please install opencv to be able to resize videos at load')
-                
+    #  Handle color mode
+    if loader == 'opencv':
+        if color == 'rgb':
+            color_fn =  lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+        elif color=='gray':
+            color_fn =  lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2LAB)[:, :, 0]
+        elif color=='bgr':
+            color_fn = lambda im: im
+        else:
+            raise ValueError('Unknown color conversion!')
+    elif loader == 'imageio':
+        if color == 'rgb':
+            color_fn = lambda im: im
+        else:
+            NotImplementedError('Color conversions with skimage not implemented yet!')
+
     # Load from local image file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
         with VideoCapture(file_name) as vid:
@@ -165,14 +179,14 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', loader='
             vid.set(1,frames[0])
             # Call resizing function on each frame individually to
             # minimize memory overhead
-            imstack = np.asarray([resize_fn(vid.read()[1]) for fr in range(*frames)])
+            imstack = np.asarray([color_fn(resize_fn(vid.read()[1])) for fr in range(*frames)])
     elif loader == 'imageio':
         with imageio.get_reader(file_name,  'ffmpeg') as vid:
             if frames is None:
                  frames = (0, vid.count_frames())
             # Call resizing function on each frame individually to
             # minimize memory overhead
-            imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
+            imstack = np.asarray([color_fn(resize_fn(vid.get_data(fr))) for fr in range(*frames)])
     return imstack
 
 def nifti_from_volume(vol, inputnii, sname=None):
