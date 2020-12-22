@@ -15,6 +15,7 @@ import warnings
 import inspect
 import functools
 import subprocess
+import collections
 import numpy as np
 from PIL import Image
 from scipy.io import loadmat
@@ -61,6 +62,12 @@ try:
     opencv_available = True
 except ImportError:
     opencv_available = False
+
+try: 
+    import msgpack
+    msgpack_available = True
+except ImportError:
+    msgpack_available = False
 
 # Parameters
 HDF_EXTENSIONS = ('.hdf', '.hf', '.hdf5', '.h5', '.hf5')
@@ -188,6 +195,38 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
             # minimize memory overhead
             imstack = np.asarray([color_fn(resize_fn(vid.get_data(fr))) for fr in range(*frames)])
     return imstack
+
+
+def load_msgpack(fpath, idx=None):
+    """Load a list of dictionaries from a msgpack file
+
+    Parameters
+    ----------
+    fpath : string
+        path to file
+    idx : tuple
+        NOT FUNCTIONAL YET. Does nothing. Intending to make this indices into the list of dicts.
+
+    Returns
+    -------
+    list of contents of file, whatever those are. Generally, dicts. 
+
+    Notes
+    -----
+    Intended for use with pupil labs data (.pldata files). Unclear if this will generalize to other 
+    msgpack files.
+
+    See https://stackoverflow.com/questions/43442194/how-do-i-read-and-write-with-msgpack for 
+    basics of reading and writing to msgpack; 
+    See https://stackoverflow.com/questions/42907315/unpacking-msgpack-from-respond-in-python
+    for notes on unpacking in chunks.
+    """
+    data = []
+    with open(fpath, "rb") as fh:
+        for topic, payload in msgpack.Unpacker(fh, raw=False, use_list=False):
+            data.append(msgpack.unpackb(payload, raw=False))
+
+    return data
 
 def nifti_from_volume(vol, inputnii, sname=None):
     import nibabel
