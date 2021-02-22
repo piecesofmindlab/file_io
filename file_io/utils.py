@@ -94,9 +94,13 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
             # black where alpha is clear; better may be to provide
             # an underlay for images with active alpha channels
             im = im[:, :, :3]
+        elif np.ndim(im)==3 and im.shape[2]==3:
+            # Fine, do nothing.
+            pass 
         else:
             raise Exception("2D only image or something error error no good handle me")
     elif mode=='RGBA':
+        # Need to add alpha channel if it doesn't exist.
        raise NotImplementedError("RGBA image loading not ready yet.")
     return im
 
