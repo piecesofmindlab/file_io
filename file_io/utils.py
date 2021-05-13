@@ -15,6 +15,7 @@ import warnings
 import inspect
 import functools
 import subprocess
+import collections
 import numpy as np
 from PIL import Image
 from scipy.io import loadmat
@@ -57,15 +58,16 @@ except:
     torch_available = False
 
 try:
-    import cv2 as cv
+    import cv2
     opencv_available = True
 except ImportError:
-    try:
-        print("cv2 import failed; attempting to import cv3!")
-        import cv3 as cv
-        opencv_available = True
-    except ImportError:
-        opencv_available = False
+    opencv_available = False
+
+try: 
+    import msgpack
+    msgpack_available = True
+except ImportError:
+    msgpack_available = False
 
 # Parameters
 HDF_EXTENSIONS = ('.hdf', '.hf', '.hdf5', '.h5', '.hf5')
@@ -80,17 +82,63 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
         im = _imread(fpath)
     elif loader=='PIL':
         pil_image = Image.open(fpath)
-        im = np.array(pil_image.getdata()).reshape(pil_image.size[0], pil_image.size[1], 3)
-    if mode=='RGB' and np.ndim(im)==3 and im.shape[2]==4:
-       # Clip alpha channel
-       im = im[:, :, :3]
+        if pil_image.mode == 'RGB':
+            n_channels = 3
+        elif pil_image.mode == 'RGBA':
+            n_channels = 4
+        im = np.array(pil_image.getdata()).reshape(pil_image.size[1], pil_image.size[0], n_channels)
+    if loader=='opencv':
+        im = cv2.imread(fpath)
+        if mode in ['RGB', 'RGBA']:
+            im = im[...,::-1]
+    if mode=='RGB':
+        if np.ndim(im)==3 and im.shape[2]==4:
+            # Clip alpha channel
+            # Note: there are other options here. Image may e.g. be 
+            # black where alpha is clear; better may be to provide
+            # an underlay for images with active alpha channels
+            im = im[:, :, :3]
+        elif np.ndim(im)==3 and im.shape[2]==3:
+            # Fine, do nothing.
+            pass 
+        else:
+            raise Exception("2D only image or something error error no good handle me")
     elif mode=='RGBA':
+        # Need to add alpha channel if it doesn't exist.
        raise NotImplementedError("RGBA image loading not ready yet.")
     return im
 
-def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
-    """
 
+
+class VideoCapture(object):
+    """Tweak of opencv VideoCapture to allow working with "with" statements
+    per https://github.com/skvark/opencv-python/issues/205
+    """
+    def __init__(self, device_num):
+        self.VideoObj = cv2.VideoCapture(device_num)
+    def __enter__(self):
+        return self.VideoObj
+    def __exit__(self, type, value, traceback):
+        self.VideoObj.release()
+
+def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='rgb', loader='opencv'):
+    """
+    Parameters
+    ----------
+    fpath : string
+        path to file to load
+    frames : tuple
+        (first, last) frame to be loaded. If not specified, attempts to load 
+        first 100 frames
+    size : tuple or scalar float or None
+        desired size of output, (vertical_dim x horizontal_dim), or 
+    tmpdir : string path
+        path to download mp4 file if it initially exists in a remote location
+    loader : string
+        'opencv' or 'imageio' ImageIO is slower, clearer what it's doing...
+    color : string
+        'rgb', 'bgr', or 'gray'
+        'gray' converts to LAB space, keeps luminance channel, returns values from 0-100
     Notes
     -----
     Defaults to loading first 100 frames. 
@@ -109,21 +157,94 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/'):
             if not os.path.exists(tmpdir):
                 os.makedirs(tmpdir)
             cci.download_to_file(os.path.join(virtual_dirs, fname), file_name)
-    # Load from local image file
-    vid = imageio.get_reader(file_name,  'ffmpeg')
+    interp = cv2.INTER_AREA # TO DO: make it clearer what this is doing
+    # (bilinear, cubic spline, ...?)
+    # Prep for resizing if necessary
     if size is None:
         resize_fn = lambda im: im
     else:
-        if skimage_available:
-            resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3)
+        if loader == 'imageio':
+            if skimage_available:
+                if isinstance(size, tuple):
+                    resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+                else:
+                    # float provided
+                    resize_fn = lambda im: skt.rescale(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+            else:
+                raise ImportError('Please install scikit-image to be able to resize videos at load')
+        elif loader == 'opencv':
+            if opencv_available:
+                if isinstance(size, tuple):
+                    resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
+                else:
+                    resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
+            else:
+                raise ImportError('Please install opencv to be able to resize videos at load')
+    #  Handle color mode
+    if loader == 'opencv':
+        if color == 'rgb':
+            color_fn =  lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2RGB)
+        elif color=='gray':
+            color_fn =  lambda im: cv2.cvtColor(im, cv2.COLOR_BGR2LAB)[:, :, 0]
+        elif color=='bgr':
+            color_fn = lambda im: im
         else:
-            raise ImportError('Please install scikit-image to be able to resize videos at load')
-    if frames is None:
-         frames = (0, vid.count_frames())
-    # Call resizing function on each frame individually to 
-    # minimize memory overhead
-    imstack = np.asarray([resize_fn(vid.get_data(fr)) for fr in range(*frames)])
+            raise ValueError('Unknown color conversion!')
+    elif loader == 'imageio':
+        if color == 'rgb':
+            color_fn = lambda im: im
+        else:
+            NotImplementedError('Color conversions with skimage not implemented yet!')
+
+    # Load from local image file; with clause should correctly close ffmpeg instance
+    if loader == 'opencv':
+        with VideoCapture(file_name) as vid:
+            if frames is None:
+                frames = (0, int(vid.get(cv2.CAP_PROP_FRAME_COUNT)))
+            vid.set(1,frames[0])
+            # Call resizing function on each frame individually to
+            # minimize memory overhead
+            imstack = np.asarray([color_fn(resize_fn(vid.read()[1])) for fr in range(*frames)])
+    elif loader == 'imageio':
+        with imageio.get_reader(file_name,  'ffmpeg') as vid:
+            if frames is None:
+                 frames = (0, vid.count_frames())
+            # Call resizing function on each frame individually to
+            # minimize memory overhead
+            imstack = np.asarray([color_fn(resize_fn(vid.get_data(fr))) for fr in range(*frames)])
     return imstack
+
+
+def load_msgpack(fpath, idx=None):
+    """Load a list of dictionaries from a msgpack file
+
+    Parameters
+    ----------
+    fpath : string
+        path to file
+    idx : tuple
+        NOT FUNCTIONAL YET. Does nothing. Intending to make this indices into the list of dicts.
+
+    Returns
+    -------
+    list of contents of file, whatever those are. Generally, dicts. 
+
+    Notes
+    -----
+    Intended for use with pupil labs data (.pldata files). Unclear if this will generalize to other 
+    msgpack files.
+
+    See https://stackoverflow.com/questions/43442194/how-do-i-read-and-write-with-msgpack for 
+    basics of reading and writing to msgpack; 
+    See https://stackoverflow.com/questions/42907315/unpacking-msgpack-from-respond-in-python
+    for notes on unpacking in chunks.
+    """
+    data = []
+    with open(fpath, "rb") as fh:
+        for topic, payload in msgpack.Unpacker(fh, raw=False, use_list=False):
+            data.append(msgpack.unpackb(payload, raw=False))
+
+    return data
 
 def nifti_from_volume(vol, inputnii, sname=None):
     import nibabel
@@ -276,8 +397,11 @@ def var_size(fpath, variable_name=None, cloudi=None):
             # imprecise (?), fast:
             # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
             return [nf, y, x, 3]
+        elif ext in '.npy':
+            arr_memmap = np.load(fpath, mmap_mode='r')
+            return arr_memmap.shape
         else:
-            raise ValueError('Only usable for hdf and mp4 files for now.')
+            raise ValueError('Only usable for hdf, mp4, and npy files for now.')
 
 # def get_array_size(fname, axis=0):
 #     """Get total number of frames (or other quantity) in file"""
@@ -420,6 +544,14 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
             out = _load_mat_array(fpath, variable_name=variable_name, idx=idx)
         elif ext in ('.mp4',):
             out = load_mp4(fpath, frames=idx, **kwargs)
+        elif ext in ('.npy',):
+            # Assume loading whole thing is not going to kill memory if
+            # we're loading an npy file; bigger arrays should be stored
+            # as HDFs or some format that allows partial load
+            out = np.load(fpath)
+            if idx is not None:
+                out = out[idx[0]:idx[1]]
+
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
         oname = os.path.join(full_path, fname, variable_name=variable_name)
@@ -781,7 +913,8 @@ if torch_available:
         """
         xfmlist = []
         if (scale is not None) and (scale is not False):
-            xfmlist.append(transforms.Scale(scale))
+            #xfmlist.append(transforms.Scale(scale))
+            xfmlist.append(transforms.Resize(scale))
         if (center_crop is not None) and (center_crop is not False):
             xfmlist.append(transforms.CenterCrop(center_crop))
         if (tensor is not None) and (tensor is not False):
@@ -1008,7 +1141,7 @@ if opencv_available:
         """Load an exr (floating point) image to surface normal array
 
         """
-        img = cv.imread(fname, cv.IMREAD_UNCHANGED)
+        img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
         imc = img-1
         y, z, x = imc.T
         if xflip: 
@@ -1027,7 +1160,7 @@ if opencv_available:
 
     def load_exr_zdepth(fname, thresh=1000):
         """Load an exr (floating point) image to absolute distance array"""
-        img = cv.imread(fname, cv.IMREAD_UNCHANGED)
+        img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
         z = img[..., 0]
         z[z > thresh] = np.nan
         return z
