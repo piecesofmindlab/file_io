@@ -82,11 +82,29 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
         im = _imread(fpath)
     elif loader=='PIL':
         pil_image = Image.open(fpath)
-        im = np.array(pil_image.getdata()).reshape(pil_image.size[0], pil_image.size[1], 3)
-    if mode=='RGB' and np.ndim(im)==3 and im.shape[2]==4:
-       # Clip alpha channel
-       im = im[:, :, :3]
+        if pil_image.mode == 'RGB':
+            n_channels = 3
+        elif pil_image.mode == 'RGBA':
+            n_channels = 4
+        im = np.array(pil_image.getdata()).reshape(pil_image.size[1], pil_image.size[0], n_channels)
+    if loader=='opencv':
+        im = cv2.imread(fpath)
+        if mode in ['RGB', 'RGBA']:
+            im = im[...,::-1]
+    if mode=='RGB':
+        if np.ndim(im)==3 and im.shape[2]==4:
+            # Clip alpha channel
+            # Note: there are other options here. Image may e.g. be 
+            # black where alpha is clear; better may be to provide
+            # an underlay for images with active alpha channels
+            im = im[:, :, :3]
+        elif np.ndim(im)==3 and im.shape[2]==3:
+            # Fine, do nothing.
+            pass 
+        else:
+            raise Exception("2D only image or something error error no good handle me")
     elif mode=='RGBA':
+        # Need to add alpha channel if it doesn't exist.
        raise NotImplementedError("RGBA image loading not ready yet.")
     return im
 
