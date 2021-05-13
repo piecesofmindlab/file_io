@@ -86,7 +86,11 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
             n_channels = 3
         elif pil_image.mode == 'RGBA':
             n_channels = 4
-        im = np.array(pil_image.getdata()).reshape(pil_image.size[0], pil_image.size[1], n_channels)
+        im = np.array(pil_image.getdata()).reshape(pil_image.size[1], pil_image.size[0], n_channels)
+    if loader=='opencv':
+        im = cv2.imread(fpath)
+        if mode in ['RGB', 'RGBA']:
+            im = im[...,::-1]
     if mode=='RGB':
         if np.ndim(im)==3 and im.shape[2]==4:
             # Clip alpha channel
