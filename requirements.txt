@@ -3,5 +3,5 @@ matplotlib
 pillow
 tqdm
 imageio
-opencv=4.2.0
-msgpack-python=0.6.2
+opencv
+msgpack-python
