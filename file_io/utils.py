@@ -240,9 +240,12 @@ def load_msgpack(fpath, idx=None):
     for notes on unpacking in chunks.
     """
     data = []
+    if idx is None:
+        idx = (-1, np.inf)
     with open(fpath, "rb") as fh:
-        for topic, payload in msgpack.Unpacker(fh, raw=False, use_list=False):
-            data.append(msgpack.unpackb(payload, raw=False))
+        for i, (topic, payload) in enumerate(msgpack.Unpacker(fh, raw=False, use_list=False)):
+            if (i >= idx[0]) and i < idx[-1]:
+                data.append(msgpack.unpackb(payload, raw=False))
 
     return data
 
