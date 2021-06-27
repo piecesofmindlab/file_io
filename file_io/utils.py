@@ -557,7 +557,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
 
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
-        oname = os.path.join(full_path, fname, variable_name=variable_name)
+        oname = os.path.join(full_path, fname, variable_name)
         out = cloudi.download_raw_array(oname)
         if out.shape==():
             # Map to int or float or whatever
