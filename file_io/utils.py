@@ -165,7 +165,7 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
     else:
         if loader == 'imageio':
             if skimage_available:
-                if isinstance(size, tuple):
+                if isinstance(size, (tuple, list)):
                     resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
                 else:
                     # float provided
@@ -174,7 +174,7 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
                 raise ImportError('Please install scikit-image to be able to resize videos at load')
         elif loader == 'opencv':
             if opencv_available:
-                if isinstance(size, tuple):
+                if isinstance(size, (tuple, list)):
                     resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
                 else:
                     resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
