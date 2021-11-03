@@ -614,10 +614,10 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
         return _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
 
 
-def save_arrays(path, fname, meta=None, acl='public-read', compression=True, **named_vars):
+def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=True, **named_vars):
     """"Layer of abstraction for saving files.
 
-    path : string
+    fpath : string
         Can be a simple file path (/path/to/my/file.hdf). Alternately, if `path` 
         begins with cloud:<bucket name>:virtual/path/, it is assumed that you 
         want to save arrays in s3 cloud storage. This calls Anwar Nunez' 
@@ -637,29 +637,35 @@ def save_arrays(path, fname, meta=None, acl='public-read', compression=True, **n
     named_vars : keyword args that specify named arrays to be stored
     
     """
-    bucket, fpath = cloud_bucket_check(path)
+    pp, fname = os.path.split(fpath)
+    fstub, ext = os.path.splitext(fname)
+    bucket, fp = cloud_bucket_check(pp)
     if bucket is None:
-        if compression is True:
-            compression = 'gzip'
-        elif compression is False:
-            compression = None
-        _save_arrays_hdf(fpath, fname, meta=meta, compression=compression, **named_vars)
+        if ext in ('.hdf', '.hf5', 'hf'):
+            # HDF5 file
+            if compression is True:
+                compression = 'gzip'
+            elif compression is False:
+                compression = None
+            _save_arrays_hdf(fpath, meta=meta, compression=compression, **named_vars)
+        elif ext in ('.npz',):
+            np.savez(fpath, **named_vars)
     else:
         if compression is True:
             compression = 'Zstd'
         elif compression is False:
             compression = None
-        oname = os.path.join(fpath, fname)
+        oname = os.path.join(fp, fname)
         _save_arrays_cloud(bucket, oname, meta=meta, acl=acl, compression=compression, **named_vars)
     return
 
 
-def _save_arrays_hdf(path, fname, meta=None, compression='gzip', compression_arg=None, fmode='w', **arrays):
+def _save_arrays_hdf(fpath, meta=None, compression='gzip', compression_arg=None, fmode='w', **arrays):
     """Save arrays to hdf file.
     
     Parameters
     ----------
-    sfile : string
+    fpath : string
         hdf file path
     arrays : dict of key, array pairs
         named arrays to be stored. If a string is provided in place of an array value,
@@ -676,8 +682,8 @@ def _save_arrays_hdf(path, fname, meta=None, compression='gzip', compression_arg
     mask storage
 
     """
-    sfile = os.path.join(path, fname)
-    with h5py.File(sfile, mode=fmode) as hf:
+    
+    with h5py.File(fpath, mode=fmode) as hf:
         for k, v in arrays.items():
             # Check for large file stored to disk
             if type(v) in six.string_types and os.path.exists(v):
@@ -728,22 +734,28 @@ def _save_arrays_cloud(bucket, fname, meta=None, acl='public-read', compression=
         cloudi.upload_json(''.join([fnm, '.json']), meta)
     return
 
-def save_dict(path, fname, tosave, mode='json'):
-    """Save a dict
+def save_dict(fpath, tosave, mode='json'):
+    """Save a dict to a file
     
+    Parameters
+    ----------
+
     Currently `mode` can only be 'json', but there are ambitions to change this to 
     include pickle or fancy versions of pickle
     
     Not recommended to have arrays as part of your dict; use other functions for that
     """
-    bucket, fpath = cloud_bucket_check(path)
-    oname = os.path.join(fpath, fname)
+    pp, fname = os.path.split(fpath)
+    bucket, fp = cloud_bucket_check(pp)
+    oname = os.path.join(pp, fname)
     if bucket is None:
         # save json file
         if mode=='json':
             json.dump(tosave, open(oname, mode='w'))
+        elif mode=='yaml':
+            pass
         else:
-            raise NotImplementedError("Only mode='json' works so far for save_dict()!")
+            raise NotImplementedError("Only mode='json' and mode='yaml' work so far for save_dict()!")
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
         cloudi.upload_json(oname, tosave)
