@@ -121,7 +121,96 @@ class VideoCapture(object):
     def __exit__(self, type, value, traceback):
         self.VideoObj.release()
 
-def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='rgb', loader='opencv'):
+
+def crop_frame(frame, center, size=(512, 512), pad_value=None):
+    """Crop an arrray to a size around a particular center point
+    
+    Parameters
+    ----------
+    frame : array
+        image to be cropped
+    center : array-like
+        list, tuple, or array with (x, y) center coordinate in normalized
+        (0-1) coordinates
+    size : array-like
+        size (vertical, horizontal) of image
+    pad_value : scalar 
+        value to use for image padding if desired cropped region goes 
+        outside of image area (function always returns same size array)
+    
+    Returns
+    -------
+    cropped_image : array
+        cropped array result
+    """
+    vdim, hdim = size
+    frame_vdim, frame_hdim = frame.shape[:2]
+    center = np.array(center) * np.array([frame_hdim, frame_vdim])
+    center = np.round(center).astype(np.int)
+    vst, vfin = center[1] - np.int(vdim/2), center[1] + np.int(vdim/2)
+    hst, hfin = center[0] - np.int(hdim/2), center[0] + np.int(hdim/2)
+    # overflow
+    vunder = -np.minimum(vst, 0)
+    vover = np.maximum(vfin-frame_vdim, 0)
+    hunder = -np.minimum(hst, 0)
+    hover = np.maximum(hfin-frame_hdim, 0)
+    # Correct indices
+    vst = np.maximum(vst, 0)
+    vfin = np.minimum(vfin, frame_vdim)
+    hst = np.maximum(hst, 0)
+    hfin = np.minimum(hfin, frame_hdim)
+    # Crop
+    region = frame[vst:vfin, hst:hfin]
+    if pad_value is None:
+        if region.dtype == np.uint8:
+            constant_value = 0
+        else:
+            constant_value = np.nan
+    else:
+        constant_value = pad_value
+    # Pad
+    out = np.pad(region, [[vunder, vover], [hunder, hover], [
+                 0, 0]], mode='constant', constant_values=constant_value)
+    return out
+
+
+def load_cropped_video(ses, gaze_matched, frame_idx=None, time_idx=None, size=(512, 512), progress_bar=None):
+    if frame_idx is not None:
+        frame_start, frame_end = frame_idx
+    else:
+        raise NotImplementedError("TO COME!")
+    #elif time_idx is not None:
+
+    gaze_pos = gaze_matched['position']
+    n_frames = frame_end - frame_start
+    if progress_bar is None:
+        def progress_bar(x): return x
+    with file_io.VideoCapture(ses.paths['world_camera'][1]) as vid:
+        vid.set(1, frame_start)
+        ct = 0
+        frames = np.zeros((n_frames, *size, 3), dtype=np.uint8)
+        for g in progress_bar(gaze_pos):
+            raw_frame = vid.read()[1]
+            try:
+                wat = crop_frame(cv2.cvtColor(
+                    raw_frame, cv2.COLOR_BGR2RGB), g, size=size)
+                frames[ct] = wat
+            except:
+                print("gaze fail for frame %d" % ct)
+                print(g)
+            ct += 1
+    return frames
+
+
+def load_mp4(fpath, 
+            frames=(0,100), 
+            size=None, 
+            crop_size=None, 
+            center=None, 
+            pad_value=None, 
+            tmpdir='/tmp/mp4cache/', 
+            color='rgb', 
+            loader='opencv'):
     """
     Parameters
     ----------
@@ -131,7 +220,13 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
         (first, last) frame to be loaded. If not specified, attempts to load 
         first 100 frames
     size : tuple or scalar float or None
-        desired size of output, (vertical_dim x horizontal_dim), or 
+        desired final size of output, (vertical_dim x horizontal_dim), or 
+    crop_size : tuple or scalar float or None
+        size of image to crop around center. This can be further resized after
+        cropping with the `size` parameter, which governs final size 
+    center : array-like
+        list or array or tuple for (x,y) coordinates around which to 
+        crop each frame. 
     tmpdir : string path
         path to download mp4 file if it initially exists in a remote location
     loader : string
@@ -197,6 +292,12 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
             NotImplementedError('Color conversions with skimage not implemented yet!')
 
     # Load from local image file; with clause should correctly close ffmpeg instance
+    n_frames = frames[1] - frames[0]
+    if color=='gray':
+        output_dims = size
+    else:
+        output_dims = (size[0], size[1], 3)
+    imstack = np.zeros((n_frames, *output_dims), dtype=np.uint8)
     if loader == 'opencv':
         with VideoCapture(file_name) as vid:
             if frames is None:
@@ -204,14 +305,29 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
             vid.set(1,frames[0])
             # Call resizing function on each frame individually to
             # minimize memory overhead
-            imstack = np.asarray([color_fn(resize_fn(vid.read()[1])) for fr in range(*frames)])
+            for fr in range(*frames):
+                tmp = vid.read()[1]
+                if center is not None:
+                    tmp = crop_frame(tmp, 
+                                    center=center, 
+                                    size=crop_size, 
+                                    pad_value=pad_value)
+                imstack[fr] = color_fn(resize_fn(tmp))
     elif loader == 'imageio':
         with imageio.get_reader(file_name,  'ffmpeg') as vid:
             if frames is None:
                  frames = (0, vid.count_frames())
             # Call resizing function on each frame individually to
             # minimize memory overhead
-            imstack = np.asarray([color_fn(resize_fn(vid.get_data(fr))) for fr in range(*frames)])
+            for fr in range(*frames):
+                tmp = vid.get_data(fr)
+                if center is not None:
+                    tmp = crop_frame(tmp,
+                                     center=center,
+                                     size=crop_size,
+                                     pad_value=pad_value)
+                imstack[fr] = color_fn(resize_fn(tmp))
+
     return imstack
 
 
