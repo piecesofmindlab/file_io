@@ -280,11 +280,12 @@ def load_mp4(fpath,
     if isinstance(size, (list, tuple)):
         imdims = size
     else:
-        orig_imdims = np.array()
+        orig_imdims = np.array(var_size(file_name)[1:3])
+        imdims = np.ceil(size * orig_imdims).astype(np.int)
     if color=='gray':
-        output_dims = size
+        output_dims = imdims
     else:
-        output_dims = (size[0], size[1], 3)
+        output_dims = (imdims[0], imdims[1], 3)
     imstack = np.zeros((n_frames, *output_dims), dtype=np.uint8)
     # Load from local file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
