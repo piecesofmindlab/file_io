@@ -291,13 +291,18 @@ def load_mp4(fpath,
         else:
             NotImplementedError('Color conversions with skimage not implemented yet!')
 
-    # Load from local image file; with clause should correctly close ffmpeg instance
+    # Preallocate image to read
     n_frames = frames[1] - frames[0]
+    if isinstance(size, (list, tuple)):
+        imdims = size
+    else:
+        orig_imdims = np.array()
     if color=='gray':
         output_dims = size
     else:
         output_dims = (size[0], size[1], 3)
     imstack = np.zeros((n_frames, *output_dims), dtype=np.uint8)
+    # Load from local file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
         with VideoCapture(file_name) as vid:
             if frames is None:
@@ -508,14 +513,22 @@ def var_size(fpath, variable_name=None, cloudi=None):
             with h5py.File(fpath, mode='r') as hf:
                 return hf[variable_name].shape
         elif ext in '.mp4':
-            vid = imageio.get_reader(fpath,  'ffmpeg')
-            meta = vid.get_meta_data()
-            x, y = meta['size']
-            # precise, slow:
-            nf = vid.count_frames()
-            # imprecise (?), fast:
-            # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
-            return [nf, y, x, 3]
+            if opencv_available:
+                with VideoCapture(fpath) as vid:
+                    vdim = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    hdim = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    n_frames_total = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+                return [n_frames_total, vdim, hdim, 3]
+            else:
+                vid = imageio.get_reader(fpath,  'ffmpeg')
+                meta = vid.get_meta_data()
+                x, y = meta['size']
+                # precise, slow:
+                nf = vid.count_frames()
+                # imprecise (?), fast:
+                # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
+                return [nf, y, x, 3]
+            
         elif ext in '.npy':
             arr_memmap = np.load(fpath, mmap_mode='r')
             return arr_memmap.shape
