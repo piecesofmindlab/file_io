@@ -121,7 +121,72 @@ class VideoCapture(object):
     def __exit__(self, type, value, traceback):
         self.VideoObj.release()
 
-def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='rgb', loader='opencv'):
+
+def crop_frame(frame, center, size=(512, 512), pad_value=None):
+    """Crop an arrray to a size around a particular center point
+    
+    Parameters
+    ----------
+    frame : array
+        image to be cropped
+    center : array-like
+        list, tuple, or array with (x, y) center coordinate in normalized
+        (0-1) coordinates
+    size : array-like
+        size (vertical, horizontal) of image
+    pad_value : scalar 
+        value to use for image padding if desired cropped region goes 
+        outside of image area (function always returns same size array)
+    
+    Returns
+    -------
+    cropped_image : array
+        cropped array result
+    """
+    vdim, hdim = size
+    frame_vdim, frame_hdim = frame.shape[:2]
+    center = np.array(center) * np.array([frame_hdim, frame_vdim])
+    center = np.round(center).astype(np.int)
+    vst, vfin = center[1] - np.int(vdim/2), center[1] + np.int(vdim/2)
+    hst, hfin = center[0] - np.int(hdim/2), center[0] + np.int(hdim/2)
+    # overflow
+    vunder = -np.minimum(vst, 0)
+    vover = np.maximum(vfin-frame_vdim, 0)
+    hunder = -np.minimum(hst, 0)
+    hover = np.maximum(hfin-frame_hdim, 0)
+    # Correct indices
+    vst = np.maximum(vst, 0)
+    vfin = np.minimum(vfin, frame_vdim)
+    hst = np.maximum(hst, 0)
+    hfin = np.minimum(hfin, frame_hdim)
+    # Crop
+    region = frame[vst:vfin, hst:hfin]
+    if pad_value is None:
+        if region.dtype == np.uint8:
+            constant_value = 0
+        else:
+            constant_value = np.nan
+    else:
+        constant_value = pad_value
+    # Pad
+    if np.ndim(frame) == 3:
+        out = np.pad(region, [[vunder, vover], [hunder, hover], [
+                    0, 0]], mode='constant', constant_values=constant_value)
+    elif np.ndim(frame) == 2:
+        out = np.pad(region, [[vunder, vover], [hunder, hover], ], mode='constant',
+                     constant_values=constant_value)
+    return out
+
+
+def load_mp4(fpath, 
+            frames=(0,100), 
+            size=None, 
+            crop_size=None, 
+            center=None, 
+            pad_value=None, 
+            tmpdir='/tmp/mp4cache/', 
+            color='rgb', 
+            loader='opencv'):
     """
     Parameters
     ----------
@@ -131,7 +196,13 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
         (first, last) frame to be loaded. If not specified, attempts to load 
         first 100 frames
     size : tuple or scalar float or None
-        desired size of output, (vertical_dim x horizontal_dim), or 
+        desired final size of output, (vertical_dim x horizontal_dim), or 
+    crop_size : tuple or scalar float or None
+        size of image to crop around center. This can be further resized after
+        cropping with the `size` parameter, which governs final size 
+    center : array-like
+        list or array or tuple for (x,y) coordinates around which to 
+        crop each frame. 
     tmpdir : string path
         path to download mp4 file if it initially exists in a remote location
     loader : string
@@ -162,10 +233,18 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
     # Prep for resizing if necessary
     if size is None:
         resize_fn = lambda im: im
+        if loader=='opencv':
+            with VideoCapture(file_name) as vid:
+                width = vid.get(cv2.CAP_PROP_FRAME_WIDTH)   # float `width`
+                height = vid.get(cv2.CAP_PROP_FRAME_HEIGHT)  # float `height`
+                size = (int(height), int(width))
+        else:
+            with imageio.get_reader(file_name) as vid:
+                size = vid.get_meta_data()['source_size']
     else:
         if loader == 'imageio':
             if skimage_available:
-                if isinstance(size, tuple):
+                if isinstance(size, (tuple, list)):
                     resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
                 else:
                     # float provided
@@ -174,7 +253,7 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
                 raise ImportError('Please install scikit-image to be able to resize videos at load')
         elif loader == 'opencv':
             if opencv_available:
-                if isinstance(size, tuple):
+                if isinstance(size, (tuple, list)):
                     resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
                 else:
                     resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
@@ -196,7 +275,19 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
         else:
             NotImplementedError('Color conversions with skimage not implemented yet!')
 
-    # Load from local image file; with clause should correctly close ffmpeg instance
+    # Preallocate image to read
+    n_frames = frames[1] - frames[0]
+    if isinstance(size, (list, tuple)):
+        imdims = size
+    else:
+        orig_imdims = np.array(var_size(file_name)[1:3])
+        imdims = np.ceil(size * orig_imdims).astype(np.int)
+    if color=='gray':
+        output_dims = imdims
+    else:
+        output_dims = (imdims[0], imdims[1], 3)
+    imstack = np.zeros((n_frames, *output_dims), dtype=np.uint8)
+    # Load from local file; with clause should correctly close ffmpeg instance
     if loader == 'opencv':
         with VideoCapture(file_name) as vid:
             if frames is None:
@@ -204,15 +295,49 @@ def load_mp4(fpath, frames=(0,100), size=None, tmpdir='/tmp/mp4cache/', color='r
             vid.set(1,frames[0])
             # Call resizing function on each frame individually to
             # minimize memory overhead
-            imstack = np.asarray([color_fn(resize_fn(vid.read()[1])) for fr in range(*frames)])
+            for i, fr in enumerate(range(*frames)):
+                tmp = vid.read()[1]
+                if center is not None:
+                    tmp = crop_frame(tmp, 
+                                    center=center, 
+                                    size=crop_size, 
+                                    pad_value=pad_value)
+                imstack[i] = color_fn(resize_fn(tmp))
     elif loader == 'imageio':
         with imageio.get_reader(file_name,  'ffmpeg') as vid:
             if frames is None:
                  frames = (0, vid.count_frames())
             # Call resizing function on each frame individually to
             # minimize memory overhead
-            imstack = np.asarray([color_fn(resize_fn(vid.get_data(fr))) for fr in range(*frames)])
+            for i, fr in enumerate(range(*frames)):
+                if i == 0:
+                    tmp = vid.get_data(fr)
+                else:
+                    tmp = vid.get_next_data()
+                if center is not None:
+                    tmp = crop_frame(tmp,
+                                     center=center,
+                                     size=crop_size,
+                                     pad_value=pad_value)
+                imstack[i] = color_fn(resize_fn(tmp))
+
     return imstack
+
+
+def write_movie_from_frames(files, sname, fps=24):
+    """
+    files is a list of files (sort it! )
+    sname is the name of the movie to be written
+    movie_size is (ht, width) e.g. (600,800)
+    fps is frames per second, ideally integer
+    """
+    im0 = load_image(str(files[0]), loader='opencv')
+    movie_size = im0.shape[:2][::-1]
+    vid = VideoEncoderFFMPEG(sname, movie_size, fps, )
+    for fnm in tqdm.tqdm(files):
+        im = load_image(str(fnm), loader='opencv')
+        vid.write(im)
+    vid.stop()
 
 
 def load_msgpack(fpath, idx=None):
@@ -240,9 +365,12 @@ def load_msgpack(fpath, idx=None):
     for notes on unpacking in chunks.
     """
     data = []
+    if idx is None:
+        idx = (-1, np.inf)
     with open(fpath, "rb") as fh:
-        for topic, payload in msgpack.Unpacker(fh, raw=False, use_list=False):
-            data.append(msgpack.unpackb(payload, raw=False))
+        for i, (topic, payload) in enumerate(msgpack.Unpacker(fh, raw=False, use_list=False)):
+            if (i >= idx[0]) and i < idx[-1]:
+                data.append(msgpack.unpackb(payload, raw=False))
 
     return data
 
@@ -318,7 +446,7 @@ def cloud_bucket_check(path):
     else:
         return None, path
 
-def fexists(path, fname, variable_name=None):
+def fexists(fpath, variable_name=None):
     """Check whether a file exists, in a file system or on the cloud
 
     If you are checking on a cloud file, path should be of the form:
@@ -330,6 +458,7 @@ def fexists(path, fname, variable_name=None):
     check whether a given array - a single object - exists, not the
     hdf-like virtual path that groups multiple objects.
     """
+    path, fname = os.path.split(fpath)
     bucket, fpath = cloud_bucket_check(path)
     if bucket is None:
         fpath = os.path.join(path, fname)
@@ -389,14 +518,22 @@ def var_size(fpath, variable_name=None, cloudi=None):
             with h5py.File(fpath, mode='r') as hf:
                 return hf[variable_name].shape
         elif ext in '.mp4':
-            vid = imageio.get_reader(fpath,  'ffmpeg')
-            meta = vid.get_meta_data()
-            x, y = meta['size']
-            # precise, slow:
-            nf = vid.count_frames()
-            # imprecise (?), fast:
-            # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
-            return [nf, y, x, 3]
+            if opencv_available:
+                with VideoCapture(fpath) as vid:
+                    vdim = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    hdim = int(vid.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    n_frames_total = int(vid.get(cv2.CAP_PROP_FRAME_COUNT))
+                return [n_frames_total, vdim, hdim, 3]
+            else:
+                vid = imageio.get_reader(fpath,  'ffmpeg')
+                meta = vid.get_meta_data()
+                x, y = meta['size']
+                # precise, slow:
+                nf = vid.count_frames()
+                # imprecise (?), fast:
+                # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
+                return [nf, y, x, 3]
+            
         elif ext in '.npy':
             arr_memmap = np.load(fpath, mmap_mode='r')
             return arr_memmap.shape
@@ -464,7 +601,7 @@ def cpfile(infile, outfile, cloudi=None, overwrite=False, tmp_file='tmp'):
     inbucket, infile_ = cloud_bucket_check(infile)
     outbucket, outfile_ = cloud_bucket_check(outfile)
     # Generic check if outfile exists
-    if fexists(*os.path.split(outfile)) and not overwrite:
+    if fexists(outfile) and not overwrite:
         raise Exception("Refusing to over-write extant file %s"%outfile)
     # Handle tmp files
     if tmp_file=='tmp':
@@ -554,7 +691,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
 
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
-        oname = os.path.join(full_path, fname, variable_name=variable_name)
+        oname = os.path.join(full_path, fname, variable_name)
         out = cloudi.download_raw_array(oname)
         if out.shape==():
             # Map to int or float or whatever
@@ -611,10 +748,10 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
         return _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
 
 
-def save_arrays(path, fname, meta=None, acl='public-read', compression=True, **named_vars):
+def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=True, **named_vars):
     """"Layer of abstraction for saving files.
 
-    path : string
+    fpath : string
         Can be a simple file path (/path/to/my/file.hdf). Alternately, if `path` 
         begins with cloud:<bucket name>:virtual/path/, it is assumed that you 
         want to save arrays in s3 cloud storage. This calls Anwar Nunez' 
@@ -634,29 +771,38 @@ def save_arrays(path, fname, meta=None, acl='public-read', compression=True, **n
     named_vars : keyword args that specify named arrays to be stored
     
     """
-    bucket, fpath = cloud_bucket_check(path)
+    if fname is not None:
+        warnings.warn('Deprecated usage! please use a single fpath input to `save_arrays`')
+        fpath = os.path.join(fpath, fname)
+    pp, fname = os.path.split(fpath)
+    fstub, ext = os.path.splitext(fname)
+    bucket, fp = cloud_bucket_check(pp)
     if bucket is None:
-        if compression is True:
-            compression = 'gzip'
-        elif compression is False:
-            compression = None
-        _save_arrays_hdf(fpath, fname, meta=meta, compression=compression, **named_vars)
+        if ext in ('.hdf', '.hf5', 'hf'):
+            # HDF5 file
+            if compression is True:
+                compression = 'gzip'
+            elif compression is False:
+                compression = None
+            _save_arrays_hdf(fpath, meta=meta, compression=compression, **named_vars)
+        elif ext in ('.npz',):
+            np.savez(fpath, **named_vars)
     else:
         if compression is True:
             compression = 'Zstd'
         elif compression is False:
             compression = None
-        oname = os.path.join(fpath, fname)
+        oname = os.path.join(fp, fname)
         _save_arrays_cloud(bucket, oname, meta=meta, acl=acl, compression=compression, **named_vars)
     return
 
 
-def _save_arrays_hdf(path, fname, meta=None, compression='gzip', compression_arg=None, fmode='w', **arrays):
+def _save_arrays_hdf(fpath, meta=None, compression='gzip', compression_arg=None, fmode='w', **arrays):
     """Save arrays to hdf file.
     
     Parameters
     ----------
-    sfile : string
+    fpath : string
         hdf file path
     arrays : dict of key, array pairs
         named arrays to be stored. If a string is provided in place of an array value,
@@ -673,8 +819,8 @@ def _save_arrays_hdf(path, fname, meta=None, compression='gzip', compression_arg
     mask storage
 
     """
-    sfile = os.path.join(path, fname)
-    with h5py.File(sfile, mode=fmode) as hf:
+    
+    with h5py.File(fpath, mode=fmode) as hf:
         for k, v in arrays.items():
             # Check for large file stored to disk
             if type(v) in six.string_types and os.path.exists(v):
@@ -725,28 +871,38 @@ def _save_arrays_cloud(bucket, fname, meta=None, acl='public-read', compression=
         cloudi.upload_json(''.join([fnm, '.json']), meta)
     return
 
-def save_dict(path, fname, tosave, mode='json'):
-    """Save a dict
+def save_dict(fpath, tosave, mode='json'):
+    """Save a dict to a file
     
+    Parameters
+    ----------
+
     Currently `mode` can only be 'json', but there are ambitions to change this to 
     include pickle or fancy versions of pickle
     
     Not recommended to have arrays as part of your dict; use other functions for that
     """
-    bucket, fpath = cloud_bucket_check(path)
-    oname = os.path.join(fpath, fname)
+    pp, fname = os.path.split(fpath)
+    bucket, fp = cloud_bucket_check(pp)
+    oname = os.path.join(pp, fname)
     if bucket is None:
         # save json file
         if mode=='json':
             json.dump(tosave, open(oname, mode='w'))
+        elif mode=='yaml':
+            pass
         else:
-            raise NotImplementedError("Only mode='json' works so far for save_dict()!")
+            raise NotImplementedError("Only mode='json' and mode='yaml' work so far for save_dict()!")
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
         cloudi.upload_json(oname, tosave)
 
-def load_dict(path, fname, mode='json'):
+def load_dict(fpath, fname=None, mode='json'):
     """Load a dictionary from a saved file. For now, only 'json'"""
+    if fname is not None:
+        warnings.warn('Deprecated usage! please use a single fpath input to `load_dict`')
+        fpath = os.path.join(fpath, fname)
+    path, fname = os.path.split(fpath)
     bucket, fpath = cloud_bucket_check(path)
     oname = os.path.join(fpath, fname)
     if bucket is None:
@@ -760,14 +916,18 @@ def load_dict(path, fname, mode='json'):
         out = cloudi.download_json(oname)
     return out
 
-def delete(path, fname, key=None, verbose=False):
+def delete(fpath, fname=None, key=None, verbose=False):
     """Delete a file or cloud object/directory of objects
 
     if no `key` argument is provided, all arrays in fname group are deleted
     (*this isn't working yet for regular hdf files)
     """
-    if not fexists(path, fname):
+    if fname is not None:
+        warnings.warn('Deprecated usage! please use a single fpath input to `delete`')
+        fpath = os.path.join(fpath, fname)
+    if not fexists(fpath):
         raise Exception("File %s not found!"%os.path.join(path, fname))
+    path, fname = os.path.split(fpath)
     bucket, fpath = cloud_bucket_check(path)
     if bucket is None:
         # File system. Incorporate deletion of individual keys.
@@ -818,10 +978,11 @@ def _named_cloud_cache(fn, *args, **kwargs):
         else:
             is_verbose = False
         if sname is not None:
-            if fexists(cpath, sname) and not is_overwrite:
+            fpath = os.path.join(cpath, sname)
+            if fexists(fpath) and not is_overwrite:
                 if is_verbose:
                     print('Downloading %s...'%sname)
-                oo = load_array(cpath, sname, 'data')
+                oo = load_array(fpath, 'data')
                 return oo
             else:
                 #print("=== Inside wrapper, running function... ===")
@@ -829,7 +990,7 @@ def _named_cloud_cache(fn, *args, **kwargs):
                 #print("=== Finished with function, saving some shit in %s==="%os.path.join(cpath, sname))
                 if is_verbose:
                     print('Storing %s...'%sname)
-                save_arrays(cpath, sname, data=out)
+                save_arrays(fpath, data=out)
             return out
         else:
             raise Exception("sname variable not found!") # TEMP FOR DEBUGGING
@@ -870,11 +1031,11 @@ def _cloud_cache(fn, *args, **kwargs):
         inputs = [str(x) for x in args] + list(kws.keys()) + [str(x) for x in kws.values()]
         inputs = str(hash(''.join(inputs)))
         sname = fn.__name__ + '_' + inputs.replace('-', 'n')
-        if fexists(cpath, sname):
+        if fexists(os.path.join(cpath, sname)):
             if is_verbose:
                 print('Downloading %s...'%sname)
             output_vars = [os.path.split(o)[1] for o in lsfiles(os.path.join(cpath, sname))]
-            oo = [load_array(cpath, sname, key) for key in output_vars]
+            oo = [load_array(os.path.join(cpath, sname), key) for key in output_vars]
             return oo
         else:
             #print("=== Inside wrapper, running function... ===")
@@ -883,7 +1044,7 @@ def _cloud_cache(fn, *args, **kwargs):
             if is_verbose:
                 print('Storing %s...'%sname)
             out_dict = dict(('array_%02d'%i, o) for i, o in enumerate(out, 1))
-            save_arrays(cpath, sname, **out_dict)
+            save_arrays(os.path.join(cpath, sname), **out_dict)
         return out
     return cache_fn
 
