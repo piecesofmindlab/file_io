@@ -332,7 +332,7 @@ def write_movie_from_frames(files, sname, fps=24, progress_bar=tqdm):
     fps is frames per second, ideally integer
     """
     im0 = load_image(str(files[0]), loader='opencv')
-    movie_size = im0.shape[:2][::-1]
+    movie_size = im0.shape[:2] #[::-1]
     vid = VideoEncoderFFMPEG(sname, movie_size, fps, )
     for fnm in progress_bar(files):
         im = load_image(str(fnm), loader='opencv')
