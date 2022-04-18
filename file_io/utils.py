@@ -143,6 +143,9 @@ def crop_frame(frame, center, size=(512, 512), pad_value=None):
     cropped_image : array
         cropped array result
     """
+    # Handle errors up front: 
+    if np.any((center > 1) | (center < 0)):
+        return np.zeros(size, dtype=frame.dtype)
     vdim, hdim = size
     frame_vdim, frame_hdim = frame.shape[:2]
     center = np.array(center) * np.array([frame_hdim, frame_vdim])
@@ -259,6 +262,9 @@ def load_mp4(fpath,
                     resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
             else:
                 raise ImportError('Please install opencv to be able to resize videos at load')
+    # Allow output to just be size of crop
+    if (size is not None) and (crop_size is not None):
+        size = crop_size
     #  Handle color mode
     if loader == 'opencv':
         if color == 'rgb':
@@ -277,6 +283,10 @@ def load_mp4(fpath,
 
     # Preallocate image to read
     n_frames = frames[1] - frames[0]
+    if (center is None) or np.ndim(center) == 1:
+        center = [center] * n_frames
+    if len(center) != n_frames:
+        raise ValueError('`center` must be a single tuple or the same number of frames to be loaded!')
     if isinstance(size, (list, tuple)):
         imdims = size
     else:
@@ -297,9 +307,9 @@ def load_mp4(fpath,
             # minimize memory overhead
             for i, fr in enumerate(range(*frames)):
                 tmp = vid.read()[1]
-                if center is not None:
+                if center[i] is not None:
                     tmp = crop_frame(tmp, 
-                                    center=center, 
+                                    center=center[i], 
                                     size=crop_size, 
                                     pad_value=pad_value)
                 imstack[i] = color_fn(resize_fn(tmp))
@@ -314,9 +324,9 @@ def load_mp4(fpath,
                     tmp = vid.get_data(fr)
                 else:
                     tmp = vid.get_next_data()
-                if center is not None:
+                if center[i] is not None:
                     tmp = crop_frame(tmp,
-                                     center=center,
+                                     center=center[i],
                                      size=crop_size,
                                      pad_value=pad_value)
                 imstack[i] = color_fn(resize_fn(tmp))
