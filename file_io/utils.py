@@ -334,7 +334,7 @@ def load_mp4(fpath,
     return imstack
 
 
-def write_movie_from_frames(files, sname, fps=24, progress_bar=tqdm):
+def write_movie_from_frames(files, sname, fps=24, progress_bar=tqdm, **kwargs):
     """
     files is a list of files (sort it! )
     sname is the name of the movie to be written
@@ -343,7 +343,7 @@ def write_movie_from_frames(files, sname, fps=24, progress_bar=tqdm):
     """
     im0 = load_image(str(files[0]), loader='opencv')
     movie_size = im0.shape[:2] #[::-1]
-    vid = VideoEncoderFFMPEG(sname, movie_size, fps, )
+    vid = VideoEncoderFFMPEG(sname, movie_size, fps, **kwargs)
     for fnm in progress_bar(files):
         im = load_image(str(fnm), loader='opencv')
         vid.write(im)
