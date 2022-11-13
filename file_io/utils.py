@@ -1313,6 +1313,8 @@ if opencv_available:
 
         """
         img = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
+        if img.shape[2] == 4:
+            img = img[:, :, :3]
         imc = img-1
         y, z, x = imc.T
         if xflip: 
