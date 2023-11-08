@@ -667,6 +667,9 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
         stressing system / network by too many simultaneous read requests.
     kwargs : passed to load_mp4 (and potentially other future functions.)
     """
+
+    out = None  # Initialize 'out' to ensure it's always defined
+
     path, fname = os.path.split(str(fpath))
     bucket, full_path = cloud_bucket_check(path)
     # Check for cache dir for quicker loading
