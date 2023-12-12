@@ -146,15 +146,30 @@ def crop_frame(frame, center, size=(512, 512), pad_value=None):
     cropped_image : array
         cropped array result
     """
+    # Inputs
+    if pad_value is None:
+        if frame.dtype == np.uint8:
+            constant_value = 0
+        else:
+            constant_value = np.nan
+    else:
+        if np.isnan(pad_value) and (frame.dtype == np.uint8):
+            constant_value = 0 # insist, crappy but do it
+        else:
+            constant_value = pad_value
     # Handle errors up front: 
     if np.any((center > 1) | (center < 0)):
-        return np.zeros(size, dtype=frame.dtype)
+        if np.ndim(frame) == 3:
+            sz_out = size + (3,)
+        else:
+            sz_out = size
+        return np.ones(sz_out, dtype=frame.dtype) * constant_value
     vdim, hdim = size
     frame_vdim, frame_hdim = frame.shape[:2]
     center = np.array(center) * np.array([frame_hdim, frame_vdim])
-    center = np.round(center).astype(np.int)
-    vst, vfin = center[1] - np.int(vdim/2), center[1] + np.int(vdim/2)
-    hst, hfin = center[0] - np.int(hdim/2), center[0] + np.int(hdim/2)
+    center = np.round(center).astype(int)
+    vst, vfin = center[1] - int(vdim/2), center[1] + int(vdim/2)
+    hst, hfin = center[0] - int(hdim/2), center[0] + int(hdim/2)
     # overflow
     vunder = -np.minimum(vst, 0)
     vover = np.maximum(vfin-frame_vdim, 0)
@@ -167,13 +182,7 @@ def crop_frame(frame, center, size=(512, 512), pad_value=None):
     hfin = np.minimum(hfin, frame_hdim)
     # Crop
     region = frame[vst:vfin, hst:hfin]
-    if pad_value is None:
-        if region.dtype == np.uint8:
-            constant_value = 0
-        else:
-            constant_value = np.nan
-    else:
-        constant_value = pad_value
+
     # Pad
     if np.ndim(frame) == 3:
         out = np.pad(region, [[vunder, vover], [hunder, hover], [
@@ -253,20 +262,21 @@ def load_mp4(fpath,
                 if isinstance(size, (tuple, list)):
                     resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
                 else:
+                    
                     # float provided
                     resize_fn = lambda im: skt.rescale(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
             else:
                 raise ImportError('Please install scikit-image to be able to resize videos at load')
         elif loader == 'opencv':
             if opencv_available:
-                if isinstance(size, (tuple, list)):
+                if isinstance(size, (tuple, list, np.ndarray)):
                     resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
                 else:
                     resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
             else:
                 raise ImportError('Please install opencv to be able to resize videos at load')
     # Allow output to just be size of crop
-    if (size is not None) and (crop_size is not None):
+    if (size is None) and (crop_size is not None):
         size = crop_size
     #  Handle color mode
     if loader == 'opencv':
@@ -294,7 +304,7 @@ def load_mp4(fpath,
         imdims = size
     else:
         orig_imdims = np.array(var_size(file_name)[1:3])
-        imdims = np.ceil(size * orig_imdims).astype(np.int)
+        imdims = np.ceil(size * orig_imdims).astype(int)
     if color=='gray':
         output_dims = imdims
     else:
@@ -309,12 +319,14 @@ def load_mp4(fpath,
             # Call resizing function on each frame individually to
             # minimize memory overhead
             for i, fr in enumerate(range(*frames)):
-                tmp = vid.read()[1]
+                tmp_ = vid.read()[1]
                 if center[i] is not None:
-                    tmp = crop_frame(tmp, 
+                    tmp = crop_frame(tmp_, 
                                     center=center[i], 
                                     size=crop_size, 
                                     pad_value=pad_value)
+                else:
+                    tmp = tmp_
                 imstack[i] = color_fn(resize_fn(tmp))
     elif loader == 'imageio':
         with imageio.get_reader(file_name,  'ffmpeg') as vid:
@@ -561,7 +573,7 @@ def list_array_shapes(fpath, variable_name=None, cloudi=None):
                 # precise, slow:
                 nf = vid.count_frames()
                 # imprecise (?), fast:
-                # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
+                # nf = np.round(meta['duration'] * meta['fps']).astype(int)
                 return [nf, y, x, 3]
         else:
             raise ValueError(f"Loading of detected type {ext} not implemented.")
@@ -1171,7 +1183,7 @@ if torch_available:
             if transform is None:
                 transform = default_xfm
             if classes is None:
-                classes = np.zeros((len(images),),dtype=np.int)
+                classes = np.zeros((len(images),),dtype=int)
             self.imgs = list(zip(images, classes))
             self.transform = transform
             self.target_transform = target_transform
@@ -1210,7 +1222,7 @@ if torch_available:
             if transform is None:
                 transform = default_xfm
             if classes is None:
-                classes = np.zeros((len(self.imgs),),dtype=np.int)
+                classes = np.zeros((len(self.imgs),),dtype=int)
             self.classes = classes
             self.transform = transform
             self.target_transform = target_transform
@@ -1221,7 +1233,9 @@ if torch_available:
             img = self.imgs[index]
             if np.ndim(img)==2:
                 img = np.tile(img[:,:,np.newaxis], [1,1,3])
-            img = Image.fromarray((img*255).astype(np.uint8))
+            if (img.dtype == np.float_) and (img.max() <= 1.0):
+                img = (img * 255).astype(np.uint8)
+            img = Image.fromarray(img)
             target = self.classes[index]
             if self.transform is not None:
                 img = self.transform(img)
@@ -1248,7 +1262,7 @@ if torch_available:
                 Set of operations to perform on data as it is loaded
                 see module transforms.py
             """
-            self.imgs = zip(images, np.zeros((len(images),),dtype=np.int))
+            self.imgs = zip(images, np.zeros((len(images),),dtype=int))
             self.transform = transform
             self.target_transform = target_transform
             self.loader = loader
