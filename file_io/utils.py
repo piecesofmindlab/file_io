@@ -22,6 +22,7 @@ from scipy.io import loadmat, whosmat, savemat
 from scipy.io.matlab import matfile_version
 from matplotlib.pyplot import imread  as _imread
 import logging
+import zipfile
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -497,7 +498,7 @@ def fexists(fpath, variable_name=None):
             file_exists = cloudi.exists_object(array_name)
         return file_exists
 
-def list_file_keys(fpath):
+def list_array_keys(fpath):
     """Get keys for variable stored in a file
 
     Does NOT support cloud arrays yet.
@@ -516,10 +517,13 @@ def list_file_keys(fpath):
         except:
             mat_info = whosmat(fpath)
             return [name for name,size,dtype in mat_info]
+    elif ext in ['.npz']:
+        npz = np.load(fpath, mmap_mode='r')
+        return npz.files
     else:
         raise ValueError("Untenable file type")
 
-def list_file_sizes(fpath, variable_name=None, cloudi=None):
+def list_array_shapes(fpath, variable_name=None, cloudi=None):
     """"""
     path, fname = os.path.split(fpath)
     bucket, path = cloud_bucket_check(path)
@@ -541,6 +545,8 @@ def list_file_sizes(fpath, variable_name=None, cloudi=None):
                 return {name: size for name,size,dtype in mat_info}
             else:
                 return {name: size for name,size,dtype in mat_info}[variable_name]
+        elif ext in ('.npz'):
+            return _list_npz_shapes(fpath)
         elif ext in ('.mp4'):
             if opencv_available:
                 with VideoCapture(fpath) as vid:
@@ -560,9 +566,20 @@ def list_file_sizes(fpath, variable_name=None, cloudi=None):
         else:
             raise ValueError('Only usable for hdf, mp4, and npy files for now.')
 
-# def get_array_size(fname, axis=0):
-#     """Get total number of frames (or other quantity) in file"""
-#     pass
+def _list_npz_shapes(fpath):
+    """
+    Takes a path to an .npz file, which is a Zip archive of .npy files.
+    Generates a sequence of (name, shape, np.dtype).
+    """
+    shapes = {}
+    with zipfile.ZipFile(fpath) as archive:
+        for name in archive.namelist():
+            if name.endswith('.npy'):
+                npy = archive.open(name)
+                version = np.lib.format.read_magic(npy)
+                shape, fortran, dtype = np.lib.format._read_array_header(npy, version)
+                shapes[name[:-4]] = shape
+    return shapes
 
 def lsfiles(prefix, cloudi=None, keep_prefix=False):
     """List all files with particular prefix"""
@@ -706,7 +723,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
             if idx is not None:
                 out = out[idx[0]:idx[1]]
         elif ext in ('.npz',):
-            out = np.load(fpath)[variable_name]
+            out = np.load(fpath, mmap_mode='r')[variable_name]
             if idx is not None:
                 out = out[idx[0]:idx[1]]
         else:
@@ -759,7 +776,7 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
     TODO: idx
     """
     if variable_name is None:
-        keys = file_array_keys(fpath)
+        keys = list_array_keys(fpath)
         if len(keys)==1:
                 logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
                 variable_name = keys[0]
