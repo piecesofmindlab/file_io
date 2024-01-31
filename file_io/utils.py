@@ -754,15 +754,16 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
 
     TODO: idx
     """
-    if variable_name is None:
-        # TODO: soften this? If only one variable exists in file, load that?
-        raise ValueError("variable_name must be specified for hdf files")    
     try:
+        if variable_name is None:
+            keys = file_array_keys(fpath)
+            if len(keys)==1:
+                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
+                    variable_name = keys[0]
+            else:
+                raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
         # Maybe it's a just a .mat file
-        d = loadmat(fpath)
-        if not variable_name in d:
-            raise ValueError('array "%s" not found in %s!'%(variable_name, fpath))
-        return d[variable_name]
+        return loadmat(fpath, variable_names=[variable_name])
     except: # NotImplementedError:
         # Note: Better to catch a specific error here, but it seems the error for loadmat has changed.
         # Now catching a generic error instead.
