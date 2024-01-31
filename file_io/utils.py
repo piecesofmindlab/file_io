@@ -497,7 +497,7 @@ def fexists(fpath, variable_name=None):
             file_exists = cloudi.exists_object(array_name)
         return file_exists
 
-def file_array_keys(fpath):
+def list_file_keys(fpath):
     """Get keys for variable stored in a file
 
     Does NOT support cloud arrays yet.
@@ -519,7 +519,7 @@ def file_array_keys(fpath):
     else:
         raise ValueError("Untenable file type")
 
-def var_size(fpath, variable_name=None, cloudi=None):
+def list_file_sizes(fpath, variable_name=None, cloudi=None):
     """"""
     path, fname = os.path.split(fpath)
     bucket, path = cloud_bucket_check(path)
