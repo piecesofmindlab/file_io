@@ -18,7 +18,7 @@ import subprocess
 import collections
 import numpy as np
 from PIL import Image
-from scipy.io import loadmat
+from scipy.io import loadmat, whosmat
 from matplotlib.pyplot import imread  as _imread
 import logging
 #from . import options
@@ -513,9 +513,8 @@ def file_array_keys(fpath):
             with h5py.File(fpath, mode='r') as hf:
                 return list(hf.keys())
         except:
-            # Try .mat second (loads all variables, lame)
-            d = loadmat(fpath)
-            return list(d.keys())
+            mat_info = whosmat(fpath)
+            return [name for name,size,dtype in mat_info]
     else:
         raise ValueError("Untenable file type")
 
@@ -527,8 +526,21 @@ def var_size(fpath, variable_name=None, cloudi=None):
         fstr, ext = os.path.splitext(fname)
         if ext in HDF_EXTENSIONS:
             with h5py.File(fpath, mode='r') as hf:
-                return hf[variable_name].shape
-        elif ext in '.mp4':
+                if variable_name is None:
+                    return {key: hf[key].shape for key in hf.keys()}
+                else:
+                    return hf[variable_name].shape
+            
+        elif ext in ('.npy'):
+            arr_memmap = np.load(fpath, mmap_mode='r')
+            return arr_memmap.shape
+        elif ext in ('.mat'):
+            mat_info = whosmat(fpath)
+            if variable_name is None:
+                return {name: size for name,size,dtype in mat_info}
+            else:
+                return {name: size for name,size,dtype in mat_info}[variable_name]
+        elif ext in ('.mp4'):
             if opencv_available:
                 with VideoCapture(fpath) as vid:
                     vdim = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -544,10 +556,6 @@ def var_size(fpath, variable_name=None, cloudi=None):
                 # imprecise (?), fast:
                 # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
                 return [nf, y, x, 3]
-            
-        elif ext in '.npy':
-            arr_memmap = np.load(fpath, mmap_mode='r')
-            return arr_memmap.shape
         else:
             raise ValueError('Only usable for hdf, mp4, and npy files for now.')
 
