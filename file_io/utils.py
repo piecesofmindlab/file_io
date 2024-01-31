@@ -696,7 +696,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
             # Assume loading whole thing is not going to kill memory if
             # we're loading an npy file; bigger arrays should be stored
             # as HDFs or some format that allows partial load
-            out = np.load(fpath)
+            out = np.load(fpath, mmap_mode='r')
             if idx is not None:
                 out = out[idx[0]:idx[1]]
 
@@ -734,7 +734,7 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
                 else:
                     raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
             if idx is None:
-                out = hf[variable_name][:]
+                out = hf[variable_name]
             else:
                 st, fin = idx
                 out = hf[variable_name][st:fin]
