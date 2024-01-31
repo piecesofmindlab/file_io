@@ -20,6 +20,7 @@ import numpy as np
 from PIL import Image
 from scipy.io import loadmat
 from matplotlib.pyplot import imread  as _imread
+import logging
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -728,7 +729,7 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
             keys = list(hf.keys())
             if variable_name is None:
                 if len(keys)==1:
-                    warnings.warn(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
+                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
                     variable_name = keys[0]
                 else:
                     raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
