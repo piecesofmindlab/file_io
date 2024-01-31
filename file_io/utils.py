@@ -737,7 +737,7 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
             keys = list(hf.keys())
             if variable_name is None:
                 if len(keys)==1:
-                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
+                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
                     variable_name = keys[0]
                 else:
                     raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
@@ -754,20 +754,15 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
 
     TODO: idx
     """
-    try:
-        if variable_name is None:
-            keys = file_array_keys(fpath)
-            if len(keys)==1:
-                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
-                    variable_name = keys[0]
-            else:
-                raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
-        # Maybe it's a just a .mat file
-        return loadmat(fpath, variable_names=[variable_name])
-    except: # NotImplementedError:
-        # Note: Better to catch a specific error here, but it seems the error for loadmat has changed.
-        # Now catching a generic error instead.
-        return _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+    if variable_name is None:
+        keys = file_array_keys(fpath)
+        if len(keys)==1:
+                logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
+                variable_name = keys[0]
+        else:
+            raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
+    # Maybe it's a just a .mat file
+    return loadmat(fpath, variable_names=[variable_name])
 
 
 def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=True, **named_vars):
