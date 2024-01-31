@@ -721,15 +721,17 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
     idx : tuple
         (start_index, end_index) to load - only works on FIRST DIMENSION for now.
     """
-    if variable_name is None:
-        # TODO: soften this? If only one variable exists in file, load that?
-        raise ValueError("variable_name must be specified for hdf files")
     with warnings.catch_warnings():
         # Ignore bullshit h5py/tables warning 
-        warnings.simplefilter("ignore")
+        # warnings.simplefilter("ignore")
         with h5py.File(fpath, 'r') as hf:
-            #if not variable_name in hf: # This raises very annoying warnings, thus it's off for now
-            #    raise ValueError('array "%s" not found in %s!'%(variable_name, fpath))
+            keys = list(hf.keys())
+            if variable_name is None:
+                if len(keys)==1:
+                    warnings.warn(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
+                    variable_name = keys[0]
+                else:
+                    raise ValueError("Variable_name must be specified for hdf files with multiple keys.")
             if idx is None:
                 out = hf[variable_name][:]
             else:
