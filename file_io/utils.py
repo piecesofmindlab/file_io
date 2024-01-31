@@ -18,7 +18,8 @@ import subprocess
 import collections
 import numpy as np
 from PIL import Image
-from scipy.io import loadmat, whosmat
+from scipy.io import loadmat, whosmat, savemat
+from scipy.io.matlab import matfile_version
 from matplotlib.pyplot import imread  as _imread
 import logging
 #from . import options
@@ -701,12 +702,15 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
         elif ext in ('.mp4',):
             out = load_mp4(fpath, frames=idx, **kwargs)
         elif ext in ('.npy',):
-            # Assume loading whole thing is not going to kill memory if
-            # we're loading an npy file; bigger arrays should be stored
-            # as HDFs or some format that allows partial load
             out = np.load(fpath, mmap_mode='r')
             if idx is not None:
                 out = out[idx[0]:idx[1]]
+        elif ext in ('.npz',):
+            out = np.load(fpath)[variable_name]
+            if idx is not None:
+                out = out[idx[0]:idx[1]]
+        else:
+            raise ValueError(f"Loading detected type {ext} not implemented.")
 
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
@@ -742,7 +746,7 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
                 else:
                     raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
             if idx is None:
-                out = hf[variable_name]
+                out = hf[variable_name][:]
             else:
                 st, fin = idx
                 out = hf[variable_name][st:fin]
@@ -761,8 +765,12 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
                 variable_name = keys[0]
         else:
             raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
-    # Maybe it's a just a .mat file
-    return loadmat(fpath, variable_names=[variable_name])
+    major_v, minor_v = matfile_version(fpath)
+    if major_v < 2:
+        out = loadmat(fpath, variable_names=[variable_name])[variable_name][idx]
+    else:
+        out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+    return out
 
 
 def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=True, **named_vars):
@@ -795,7 +803,7 @@ def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=Tru
     fstub, ext = os.path.splitext(fname)
     bucket, fp = cloud_bucket_check(pp)
     if bucket is None:
-        if ext in ('.hdf', '.hf5', 'hf'):
+        if ext in HDF_EXTENSIONS:
             # HDF5 file
             if compression is True:
                 compression = 'gzip'
@@ -803,7 +811,14 @@ def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=Tru
                 compression = None
             _save_arrays_hdf(fpath, meta=meta, compression=compression, **named_vars)
         elif ext in ('.npz',):
-            np.savez(fpath, **named_vars)
+            if compression is True:
+                np.savez(fpath, **named_vars)
+            elif compression is False:
+                np.savez_compressed(fpath, **named_vars)
+        elif ext in ('.mat',):
+            savemat(fpath, named_vars, do_compression=compression)
+        else:
+            raise ValueError(f"Saving as detected type {ext} not implemented.")
     else:
         if compression is True:
             compression = 'Zstd'
