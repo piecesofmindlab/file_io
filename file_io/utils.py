@@ -731,7 +731,7 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
                     warnings.warn(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.', stacklevel=2)
                     variable_name = keys[0]
                 else:
-                    raise ValueError("Variable_name must be specified for hdf files with multiple keys.")
+                    raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
             if idx is None:
                 out = hf[variable_name][:]
             else:
