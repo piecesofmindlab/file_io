@@ -723,9 +723,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
             if idx is not None:
                 out = out[idx[0]:idx[1]]
         elif ext in ('.npz',):
-            out = np.load(fpath, mmap_mode='r')[variable_name]
-            if idx is not None:
-                out = out[idx[0]:idx[1]]
+            out = _load_npz_array(fpath, variable_name=variable_name, idx=idx)
         else:
             raise ValueError(f"Loading detected type {ext} not implemented.")
 
@@ -789,6 +787,20 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
         out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
     return out
 
+def _load_npz_array(fpath, variable_name=None, idx=None):
+    """Load array from numpy .npz file
+    """
+    if variable_name is None:
+        keys = list_array_keys(fpath)
+        if len(keys)==1:
+                logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
+                variable_name = keys[0]
+        else:
+            raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
+    out = np.load(fpath, mmap_mode='r')[variable_name]
+    if idx is not None:
+        out = out[idx[0]:idx[1]]
+    return out
 
 def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=True, **named_vars):
     """"Layer of abstraction for saving files.
