@@ -18,8 +18,11 @@ import subprocess
 import collections
 import numpy as np
 from PIL import Image
-from scipy.io import loadmat
+from scipy.io import loadmat, whosmat, savemat
+from scipy.io.matlab import matfile_version
 from matplotlib.pyplot import imread  as _imread
+import logging
+import zipfile
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -495,7 +498,7 @@ def fexists(fpath, variable_name=None):
             file_exists = cloudi.exists_object(array_name)
         return file_exists
 
-def file_array_keys(fpath):
+def list_array_keys(fpath):
     """Get keys for variable stored in a file
 
     Does NOT support cloud arrays yet.
@@ -512,13 +515,15 @@ def file_array_keys(fpath):
             with h5py.File(fpath, mode='r') as hf:
                 return list(hf.keys())
         except:
-            # Try .mat second (loads all variables, lame)
-            d = loadmat(fpath)
-            return list(d.keys())
+            mat_info = whosmat(fpath)
+            return [name for name,size,dtype in mat_info]
+    elif ext in ['.npz']:
+        npz = np.load(fpath, mmap_mode='r')
+        return npz.files
     else:
-        raise ValueError("Untenable file type")
+        raise ValueError(f"Loading of detected type {ext} not implemented.")
 
-def var_size(fpath, variable_name=None, cloudi=None):
+def list_array_shapes(fpath, variable_name=None, cloudi=None):
     """"""
     path, fname = os.path.split(fpath)
     bucket, path = cloud_bucket_check(path)
@@ -526,8 +531,23 @@ def var_size(fpath, variable_name=None, cloudi=None):
         fstr, ext = os.path.splitext(fname)
         if ext in HDF_EXTENSIONS:
             with h5py.File(fpath, mode='r') as hf:
-                return hf[variable_name].shape
-        elif ext in '.mp4':
+                if variable_name is None:
+                    return {key: hf[key].shape for key in hf.keys()}
+                else:
+                    return hf[variable_name].shape
+            
+        elif ext in ('.npy'):
+            arr_memmap = np.load(fpath, mmap_mode='r')
+            return arr_memmap.shape
+        elif ext in ('.mat'):
+            mat_info = whosmat(fpath)
+            if variable_name is None:
+                return {name: size for name,size,dtype in mat_info}
+            else:
+                return {name: size for name,size,dtype in mat_info}[variable_name]
+        elif ext in ('.npz'):
+            return _list_npz_shapes(fpath)
+        elif ext in ('.mp4'):
             if opencv_available:
                 with VideoCapture(fpath) as vid:
                     vdim = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -543,16 +563,23 @@ def var_size(fpath, variable_name=None, cloudi=None):
                 # imprecise (?), fast:
                 # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
                 return [nf, y, x, 3]
-            
-        elif ext in '.npy':
-            arr_memmap = np.load(fpath, mmap_mode='r')
-            return arr_memmap.shape
         else:
-            raise ValueError('Only usable for hdf, mp4, and npy files for now.')
+            raise ValueError(f"Loading of detected type {ext} not implemented.")
 
-# def get_array_size(fname, axis=0):
-#     """Get total number of frames (or other quantity) in file"""
-#     pass
+def _list_npz_shapes(fpath):
+    """
+    Takes a path to an .npz file, which is a Zip archive of .npy files.
+    Generates a sequence of (name, shape, np.dtype).
+    """
+    shapes = {}
+    with zipfile.ZipFile(fpath) as archive:
+        for name in archive.namelist():
+            if name.endswith('.npy'):
+                npy = archive.open(name)
+                version = np.lib.format.read_magic(npy)
+                shape, fortran, dtype = np.lib.format._read_array_header(npy, version)
+                shapes[name[:-4]] = shape
+    return shapes
 
 def lsfiles(prefix, cloudi=None, keep_prefix=False):
     """List all files with particular prefix"""
@@ -692,12 +719,13 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
         elif ext in ('.mp4',):
             out = load_mp4(fpath, frames=idx, **kwargs)
         elif ext in ('.npy',):
-            # Assume loading whole thing is not going to kill memory if
-            # we're loading an npy file; bigger arrays should be stored
-            # as HDFs or some format that allows partial load
-            out = np.load(fpath)
+            out = np.load(fpath, mmap_mode='r')
             if idx is not None:
                 out = out[idx[0]:idx[1]]
+        elif ext in ('.npz',):
+            out = _load_npz_array(fpath, variable_name=variable_name, idx=idx)
+        else:
+            raise ValueError(f"Loading of detected type {ext} not implemented.")
 
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
@@ -721,15 +749,17 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
     idx : tuple
         (start_index, end_index) to load - only works on FIRST DIMENSION for now.
     """
-    if variable_name is None:
-        # TODO: soften this? If only one variable exists in file, load that?
-        raise ValueError("variable_name must be specified for hdf files")
     with warnings.catch_warnings():
         # Ignore bullshit h5py/tables warning 
-        warnings.simplefilter("ignore")
+        # warnings.simplefilter("ignore")
         with h5py.File(fpath, 'r') as hf:
-            #if not variable_name in hf: # This raises very annoying warnings, thus it's off for now
-            #    raise ValueError('array "%s" not found in %s!'%(variable_name, fpath))
+            keys = list(hf.keys())
+            if variable_name is None:
+                if len(keys)==1:
+                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
+                    variable_name = keys[0]
+                else:
+                    raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
             if idx is None:
                 out = hf[variable_name][:]
             else:
@@ -744,19 +774,33 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
     TODO: idx
     """
     if variable_name is None:
-        # TODO: soften this? If only one variable exists in file, load that?
-        raise ValueError("variable_name must be specified for hdf files")    
-    try:
-        # Maybe it's a just a .mat file
-        d = loadmat(fpath)
-        if not variable_name in d:
-            raise ValueError('array "%s" not found in %s!'%(variable_name, fpath))
-        return d[variable_name]
-    except: # NotImplementedError:
-        # Note: Better to catch a specific error here, but it seems the error for loadmat has changed.
-        # Now catching a generic error instead.
-        return _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+        keys = list_array_keys(fpath)
+        if len(keys)==1:
+                logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
+                variable_name = keys[0]
+        else:
+            raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
+    major_v, minor_v = matfile_version(fpath)
+    if major_v < 2:
+        out = loadmat(fpath, variable_names=[variable_name])[variable_name][idx]
+    else:
+        out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+    return out
 
+def _load_npz_array(fpath, variable_name=None, idx=None):
+    """Load array from numpy .npz file
+    """
+    if variable_name is None:
+        keys = list_array_keys(fpath)
+        if len(keys)==1:
+                logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
+                variable_name = keys[0]
+        else:
+            raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
+    out = np.load(fpath, mmap_mode='r')[variable_name]
+    if idx is not None:
+        out = out[idx[0]:idx[1]]
+    return out
 
 def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=True, **named_vars):
     """"Layer of abstraction for saving files.
@@ -788,7 +832,7 @@ def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=Tru
     fstub, ext = os.path.splitext(fname)
     bucket, fp = cloud_bucket_check(pp)
     if bucket is None:
-        if ext in ('.hdf', '.hf5', 'hf'):
+        if ext in HDF_EXTENSIONS:
             # HDF5 file
             if compression is True:
                 compression = 'gzip'
@@ -796,7 +840,14 @@ def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=Tru
                 compression = None
             _save_arrays_hdf(fpath, meta=meta, compression=compression, **named_vars)
         elif ext in ('.npz',):
-            np.savez(fpath, **named_vars)
+            if compression is True:
+                np.savez_compressed(fpath, **named_vars)
+            elif compression is False:
+                np.savez(fpath, **named_vars)
+        elif ext in ('.mat',):
+            savemat(fpath, named_vars, do_compression=compression)
+        else:
+            raise ValueError(f"Saving as detected type {ext} not implemented.")
     else:
         if compression is True:
             compression = 'Zstd'
