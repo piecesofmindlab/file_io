@@ -521,7 +521,7 @@ def list_array_keys(fpath):
         npz = np.load(fpath, mmap_mode='r')
         return npz.files
     else:
-        raise ValueError("Untenable file type")
+        raise ValueError(f"Loading of detected type {ext} not implemented.")
 
 def list_array_shapes(fpath, variable_name=None, cloudi=None):
     """"""
@@ -564,7 +564,7 @@ def list_array_shapes(fpath, variable_name=None, cloudi=None):
                 # nf = np.round(meta['duration'] * meta['fps']).astype(np.int)
                 return [nf, y, x, 3]
         else:
-            raise ValueError('Only usable for hdf, mp4, and npy files for now.')
+            raise ValueError(f"Loading of detected type {ext} not implemented.")
 
 def _list_npz_shapes(fpath):
     """
@@ -725,7 +725,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
         elif ext in ('.npz',):
             out = _load_npz_array(fpath, variable_name=variable_name, idx=idx)
         else:
-            raise ValueError(f"Loading detected type {ext} not implemented.")
+            raise ValueError(f"Loading of detected type {ext} not implemented.")
 
     else:
         cloudi = get_interface(bucket_name=bucket, verbose=False, config=botoconfig)
