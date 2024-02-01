@@ -841,9 +841,9 @@ def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=Tru
             _save_arrays_hdf(fpath, meta=meta, compression=compression, **named_vars)
         elif ext in ('.npz',):
             if compression is True:
-                np.savez(fpath, **named_vars)
-            elif compression is False:
                 np.savez_compressed(fpath, **named_vars)
+            elif compression is False:
+                np.savez(fpath, **named_vars)
         elif ext in ('.mat',):
             savemat(fpath, named_vars, do_compression=compression)
         else:
