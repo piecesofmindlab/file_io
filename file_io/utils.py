@@ -18,8 +18,8 @@ import subprocess
 import collections
 import numpy as np
 from PIL import Image
+import scipy
 from scipy.io import loadmat, whosmat, savemat
-from scipy.io.matlab import matfile_version
 from matplotlib.pyplot import imread  as _imread
 import logging
 import zipfile
@@ -780,7 +780,7 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
                 variable_name = keys[0]
         else:
             raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
-    major_v, minor_v = matfile_version(fpath)
+    major_v, minor_v = scipy.io.matlab.matfile_version(fpath)
     if major_v < 2:
         out = loadmat(fpath, variable_names=[variable_name])[variable_name][idx]
     else:
