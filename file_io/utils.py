@@ -932,6 +932,21 @@ def _save_arrays_cloud(bucket, fname, meta=None, acl='public-read', compression=
         cloudi.upload_json(''.join([fnm, '.json']), meta)
     return
 
+def append_to_hdf(file_path, data_dict, compression=None):
+    """
+    Appends new data to specified datasets within an HDF5 file. If a dataset or the HDF5 file does not exist, they are created.
+    """
+    with h5py.File(file_path, 'a') as hdf_file:
+        for dataset_name, new_data in data_dict.items():
+            new_data = np.asarray(new_data)
+            if dataset_name in hdf_file:
+                dataset = hdf_file[dataset_name]
+                dataset.resize(dataset.shape[0] + new_data.shape[0], axis=0)
+                dataset[-new_data.shape[0]:] = new_data
+            else:
+                maxshape = (None,) + new_data.shape[1:]
+                hdf_file.create_dataset(dataset_name, data=new_data, maxshape=maxshape, compression=compression)
+
 def save_dict(fpath, tosave, mode='json'):
     """Save a dict to a file
     
