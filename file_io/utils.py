@@ -303,7 +303,7 @@ def load_mp4(fpath,
     if isinstance(size, (list, tuple)):
         imdims = size
     else:
-        orig_imdims = np.array(var_size(file_name)[1:3])
+        orig_imdims = np.array(list_array_shapes(file_name)[1:3])
         imdims = np.ceil(size * orig_imdims).astype(int)
     if color=='gray':
         output_dims = imdims
