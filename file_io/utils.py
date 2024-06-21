@@ -193,8 +193,13 @@ def crop_frame(frame, center, size=(512, 512), pad_value=None):
                      constant_values=constant_value)
     return out
 
+def load_mp4(args, **kwargs):
+    """backward compatibility function, deprecated"""
+    warnings.warn('Deprecated function! Please use load_video, this will be removed in the future.')
+    return load_video(*args, **kwargs)
 
-def load_mp4(fpath, 
+
+def load_video(fpath, 
             frames=(0,100), 
             size=None, 
             crop_size=None, 
