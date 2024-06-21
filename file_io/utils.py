@@ -74,6 +74,7 @@ except ImportError:
 
 # Parameters
 HDF_EXTENSIONS = ('.hdf', '.hf', '.hdf5', '.h5', '.hf5')
+MOVIE_EXTENSIONS = ('.mp4','.avi')
 
 # functions
 def load_image(fpath, mode='RGB', loader='matplotlib'):
@@ -516,7 +517,7 @@ def list_array_keys(fpath):
     Does NOT support cloud arrays yet.
     """
     fnm, ext = os.path.splitext(fpath)
-    if ext in ('.mp4',):
+    if ext in MOVIE_EXTENSIONS:
         return None
     elif ext in HDF_EXTENSIONS:
         with h5py.File(fpath, mode='r') as hf:
@@ -559,7 +560,7 @@ def list_array_shapes(fpath, variable_name=None, cloudi=None):
                 return {name: size for name,size,dtype in mat_info}[variable_name]
         elif ext in ('.npz'):
             return _list_npz_shapes(fpath)
-        elif ext in ('.mp4'):
+        elif ext in MOVIE_EXTENSIONS:
             if opencv_available:
                 with VideoCapture(fpath) as vid:
                     vdim = int(vid.get(cv2.CAP_PROP_FRAME_HEIGHT))
@@ -728,7 +729,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
             out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
         elif ext in ('.mat',):
             out = _load_mat_array(fpath, variable_name=variable_name, idx=idx)
-        elif ext in ('.mp4',):
+        elif ext in MOVIE_EXTENSIONS:
             out = load_mp4(fpath, frames=idx, **kwargs)
         elif ext in ('.npy',):
             out = np.load(fpath, mmap_mode='r')
