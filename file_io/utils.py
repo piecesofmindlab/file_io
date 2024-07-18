@@ -193,7 +193,7 @@ def crop_frame(frame, center, size=(512, 512), pad_value=None):
                      constant_values=constant_value)
     return out
 
-def load_mp4(args, **kwargs):
+def load_mp4(*args, **kwargs):
     """backward compatibility function, deprecated"""
     warnings.warn('Deprecated function! Please use load_video, this will be removed in the future.')
     return load_video(*args, **kwargs)
@@ -735,7 +735,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
         elif ext in ('.mat',):
             out = _load_mat_array(fpath, variable_name=variable_name, idx=idx)
         elif ext in MOVIE_EXTENSIONS:
-            out = load_mp4(fpath, frames=idx, **kwargs)
+            out = load_video(fpath, frames=idx, **kwargs)
         elif ext in ('.npy',):
             out = np.load(fpath, mmap_mode='r')
             if idx is not None:
