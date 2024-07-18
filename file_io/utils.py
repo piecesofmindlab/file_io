@@ -15,6 +15,7 @@ import warnings
 import inspect
 import functools
 import subprocess
+import pathlib
 import collections
 import numpy as np
 from PIL import Image
@@ -211,7 +212,7 @@ def load_video(fpath,
     """
     Parameters
     ----------
-    fpath : string
+    fpath : string or Path
         path to file to load
     frames : tuple
         (first, last) frame to be loaded. If not specified, attempts to load 
@@ -235,6 +236,8 @@ def load_video(fpath,
     -----
     Defaults to loading first 100 frames. 
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     # Check for cloud path; if so, use cottoncandy for s3 access
     path, fname = os.path.split(fpath)
     bucket, virtual_dirs = cloud_bucket_check(path)
