@@ -159,6 +159,7 @@ def crop_frame(frame, center, size=(512, 512), pad_value=None):
             constant_value = 0 # insist, crappy but do it
         else:
             constant_value = pad_value
+    center = np.asarray(center)
     # Handle errors up front: 
     if np.any((center > 1) | (center < 0)):
         if np.ndim(frame) == 3:
@@ -199,7 +200,49 @@ def load_mp4(*args, **kwargs):
     warnings.warn('Deprecated function! Please use load_video, this will be removed in the future.')
     return load_video(*args, **kwargs)
 
+def resize_skimage(im, size,
+                   anti_aliasing=True,
+                   order=3,
+                   preserve_range=True,
+                   ):
+    """resize image with skimage functions
+    
+    Trades off between skimage.transforms.resize and 
+    skimage.transforms.rescale depending on whether
+    `size` input is float or int
+    """
+    if not skimage_available:
+        raise ImportError('Please install scikit-image to be able to resize videos at load')
+    if isinstance(size, (tuple, list)):
+        #resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
+        out = skt.resize(im, size, 
+                            anti_aliasing=anti_aliasing,
+                            order=order,
+                            prserve_range=preserve_range,).astype(im.dtype)
+    else:
+        # float provided
+        out = skt.rescale(im, size,
+                          anti_aliasing=anti_aliasing, 
+                          order=3,
+                          preserve_range=preserve_range).astype(im.dtype)
+    return out
 
+def resize_opencv(im, size):
+    if not opencv_available:
+        raise ImportError('Please install opencv to be able to resize videos at load')
+    interp = cv2.INTER_AREA 
+    if isinstance(size, (tuple, list, np.ndarray)):
+        out = cv2.resize(im, size[::-1], interpolation=interp)
+    else:
+        # Single float provided, scale whole image
+        out = cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
+    return out
+
+RESIZE_FUNCTIONS = dict(
+    skimage=resize_skimage,
+    opencv=resize_opencv,
+    none=lambda x: x
+)
 def load_video(fpath, 
             frames=(0,100), 
             size=None, 
@@ -223,8 +266,9 @@ def load_video(fpath,
         size of image to crop around center. This can be further resized after
         cropping with the `size` parameter, which governs final size 
     center : array-like
-        list or array or tuple for (x,y) coordinates around which to 
-        crop each frame. 
+        list or array or tuple for (x,y) coordinates 
+        around which to crop each frame, specified in
+        relative coordinates (0-1). 
     tmpdir : string path
         path to download mp4 file if it initially exists in a remote location
     loader : string
@@ -252,38 +296,15 @@ def load_video(fpath,
             if not os.path.exists(tmpdir):
                 os.makedirs(tmpdir)
             cci.download_to_file(os.path.join(virtual_dirs, fname), file_name)
-    interp = cv2.INTER_AREA # TO DO: make it clearer what this is doing
+    # TO DO: make it clearer what this is doing
     # (bilinear, cubic spline, ...?)
     # Prep for resizing if necessary
     if size is None:
-        resize_fn = lambda im: im
-        if loader=='opencv':
-            with VideoCapture(file_name) as vid:
-                width = vid.get(cv2.CAP_PROP_FRAME_WIDTH)   # float `width`
-                height = vid.get(cv2.CAP_PROP_FRAME_HEIGHT)  # float `height`
-                size = (int(height), int(width))
-        else:
-            with imageio.get_reader(file_name) as vid:
-                size = vid.get_meta_data()['source_size']
+        resize_fn = RESIZE_FUNCTIONS['none']
+        # n_frames_total, height, width, _ = list_array_shapes(file_name)
+        # size = (int(height), int(width))
     else:
-        if loader == 'imageio':
-            if skimage_available:
-                if isinstance(size, (tuple, list)):
-                    resize_fn = lambda im: skt.resize(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
-                else:
-                    
-                    # float provided
-                    resize_fn = lambda im: skt.rescale(im, size, anti_aliasing=True, order=3, preserve_range=-True).astype(im.dtype)
-            else:
-                raise ImportError('Please install scikit-image to be able to resize videos at load')
-        elif loader == 'opencv':
-            if opencv_available:
-                if isinstance(size, (tuple, list, np.ndarray)):
-                    resize_fn = lambda im: cv2.resize(im, size[::-1], interpolation=interp)
-                else:
-                    resize_fn = lambda im: cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
-            else:
-                raise ImportError('Please install opencv to be able to resize videos at load')
+        resize_fn = RESIZE_FUNCTIONS[loader]
     # Allow output to just be size of crop
     if (size is None) and (crop_size is not None):
         size = crop_size
@@ -309,6 +330,7 @@ def load_video(fpath,
         center = [center] * n_frames
     if len(center) != n_frames:
         raise ValueError('`center` must be a single tuple or the same number of frames to be loaded!')
+    
     if isinstance(size, (list, tuple)):
         imdims = size
     else:
