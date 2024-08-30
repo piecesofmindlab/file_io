@@ -24,6 +24,7 @@ from scipy.io import loadmat, whosmat, savemat
 from matplotlib.pyplot import imread  as _imread
 import logging
 import zipfile
+import pathlib
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -227,15 +228,16 @@ def resize_skimage(im, size,
                           preserve_range=preserve_range).astype(im.dtype)
     return out
 
-def resize_opencv(im, size):
+def resize_opencv(im, size, interpolation=None):
     if not opencv_available:
         raise ImportError('Please install opencv to be able to resize videos at load')
-    interp = cv2.INTER_AREA 
+    if interpolation is None:
+        interpolation = cv2.INTER_AREA 
     if isinstance(size, (tuple, list, np.ndarray)):
-        out = cv2.resize(im, size[::-1], interpolation=interp)
+        out = cv2.resize(im, size[::-1], interpolation=interpolation)
     else:
         # Single float provided, scale whole image
-        out = cv2.resize(im, None, fx=size, fy=size, interpolation=interp)
+        out = cv2.resize(im, None, fx=size, fy=size, interpolation=interpolation)
     return out
 
 RESIZE_FUNCTIONS = dict(
@@ -246,6 +248,7 @@ RESIZE_FUNCTIONS = dict(
 def load_video(fpath, 
             frames=(0,100), 
             size=None, 
+            interpolation=None,
             crop_size=None, 
             center=None, 
             pad_value=None, 
@@ -304,7 +307,7 @@ def load_video(fpath,
         # n_frames_total, height, width, _ = list_array_shapes(file_name)
         # size = (int(height), int(width))
     else:
-        resize_fn = RESIZE_FUNCTIONS[loader]
+        resize_fn = lambda im: RESIZE_FUNCTIONS[loader](im, size=size, interpolation=interpolation)
     # Allow output to just be size of crop
     if (size is None) and (crop_size is not None):
         size = crop_size
@@ -335,7 +338,10 @@ def load_video(fpath,
         imdims = size
     else:
         orig_imdims = np.array(list_array_shapes(file_name)[1:3])
-        imdims = np.ceil(size * orig_imdims).astype(int)
+        if size is None:
+            imdims = orig_imdims.copy()
+        else:
+            imdims = np.ceil(size * orig_imdims).astype(int)
     if color=='gray':
         output_dims = imdims
     else:
@@ -546,6 +552,8 @@ def list_array_keys(fpath):
 
     Does NOT support cloud arrays yet.
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)    
     fnm, ext = os.path.splitext(fpath)
     if ext in MOVIE_EXTENSIONS:
         return None
@@ -568,6 +576,8 @@ def list_array_keys(fpath):
 
 def list_array_shapes(fpath, variable_name=None, cloudi=None):
     """"""
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     path, fname = os.path.split(fpath)
     bucket, path = cloud_bucket_check(path)
     if bucket is None:
@@ -677,6 +687,10 @@ def cpfile(infile, outfile, cloudi=None, overwrite=False, tmp_file='tmp'):
     google drive to google drive (?)
     google drive to s3 (?)
     """
+    if isinstance(infile, pathlib.Path):
+        infile = str(infile)
+    if isinstance(outfile, pathlib.Path):
+        outfile = str(outfile)
 
     inbucket, infile_ = cloud_bucket_check(infile)
     outbucket, outfile_ = cloud_bucket_check(outfile)
@@ -792,6 +806,8 @@ def _load_hdf_array(fpath, variable_name=None, idx=None, verbose=False):
     idx : tuple
         (start_index, end_index) to load - only works on FIRST DIMENSION for now.
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     with warnings.catch_warnings():
         # Ignore bullshit h5py/tables warning 
         # warnings.simplefilter("ignore")
@@ -817,6 +833,8 @@ def _load_mat_array(fpath, variable_name=None, idx=None, verbose=False):
 
     TODO: idx
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     if variable_name is None:
         keys = list_array_keys(fpath)
         if len(keys)==1:
@@ -871,6 +889,8 @@ def save_arrays(fpath, fname=None, meta=None, acl='public-read', compression=Tru
     named_vars : keyword args that specify named arrays to be stored
     
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     if fname is not None:
         warnings.warn('Deprecated usage! please use a single fpath input to `save_arrays`')
         fpath = os.path.join(fpath, fname)
@@ -926,6 +946,8 @@ def _save_arrays_hdf(fpath, meta=None, compression='gzip', compression_arg=None,
     mask storage
 
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     
     with h5py.File(fpath, mode=fmode) as hf:
         for k, v in arrays.items():
@@ -982,6 +1004,8 @@ def append_to_hdf(file_path, data_dict, compression=None):
     """
     Appends new data to specified datasets within an HDF5 file. If a dataset or the HDF5 file does not exist, they are created.
     """
+    if isinstance(file_path, pathlib.Path):
+        file_path = str(file_path)
     with h5py.File(file_path, 'a') as hdf_file:
         for dataset_name, new_data in data_dict.items():
             new_data = np.asarray(new_data)
@@ -1004,6 +1028,8 @@ def save_dict(fpath, tosave, mode='json'):
     
     Not recommended to have arrays as part of your dict; use other functions for that
     """
+    if isinstance(fpath, pathlib.Path):
+        fpath = str(fpath)
     pp, fname = os.path.split(fpath)
     bucket, fp = cloud_bucket_check(pp)
     oname = os.path.join(pp, fname)
