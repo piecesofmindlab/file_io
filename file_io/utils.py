@@ -758,7 +758,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
     return out
 
 
-def _load_hdf_array(fpath, variable_name=None, idx=None):
+def _load_hdf_array(fpath, variable_name=None, idx=None, verbose=False):
     """Load array from hdf file
 
     Parameters
@@ -777,7 +777,8 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
             keys = list(hf.keys())
             if variable_name is None:
                 if len(keys)==1:
-                    logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
+                    if verbose:
+                        logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
                     variable_name = keys[0]
                 else:
                     raise ValueError(f"Variable_name must be specified for hdf files with multiple keys. Available keys: {keys}")
@@ -789,7 +790,7 @@ def _load_hdf_array(fpath, variable_name=None, idx=None):
     return out
 
     
-def _load_mat_array(fpath, variable_name=None, idx=None):
+def _load_mat_array(fpath, variable_name=None, idx=None, verbose=False):
     """Load array from matlab .mat file
 
     TODO: idx
@@ -797,8 +798,9 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
     if variable_name is None:
         keys = list_array_keys(fpath)
         if len(keys)==1:
+            if verbose:
                 logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
-                variable_name = keys[0]
+            variable_name = keys[0]
         else:
             raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
     major_v, minor_v = scipy.io.matlab.matfile_version(fpath)
@@ -808,14 +810,15 @@ def _load_mat_array(fpath, variable_name=None, idx=None):
         out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
     return out
 
-def _load_npz_array(fpath, variable_name=None, idx=None):
+def _load_npz_array(fpath, variable_name=None, idx=None, verbose=False):
     """Load array from numpy .npz file
     """
     if variable_name is None:
         keys = list_array_keys(fpath)
         if len(keys)==1:
+            if verbose:
                 logging.warning(f'No variable_name specified, but file has only one key ({keys[0]}), so this key will be used.')
-                variable_name = keys[0]
+            variable_name = keys[0]
         else:
             raise ValueError(f"Variable_name must be specified for mat files with multiple keys. Available keys: {keys}")
     out = np.load(fpath, mmap_mode='r')[variable_name]
