@@ -5,5 +5,5 @@ tqdm
 h5py
 json
 imageio
-opencv
+opencv-python
 msgpack-python
