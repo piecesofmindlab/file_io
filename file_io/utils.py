@@ -82,6 +82,9 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
     """Dead simple imread with matplotlib (only) for now. 
 
     A placeholder for a more useful layer of abstraction.
+
+    Parameters
+    ----------
     """
     if loader=='matplotlib':
         im = _imread(fpath)
@@ -1427,6 +1430,14 @@ if opencv_available:
         z[z > thresh] = np.nan
         return z
 
+    def load_exr_motion(fname):
+        """Load an exr (floating point) image to motion vector array"""
+        motion_file = cv2.imread(fname, cv2.IMREAD_UNCHANGED)
+        mx = -motion_file[:, :, 0]  # horizontal motion
+        my = motion_file[:, :, 1]   # vertical motion
+        my = -my                   # flip vertical axis
+        return mx, my
+    
 
 def save_movie(fname, array, fps=30, crf=0, preset='fast', codec='libx264', color_format='rgb24', is_verbose=False):
     """Save array of images as an mp4 movie"""
