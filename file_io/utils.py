@@ -25,6 +25,7 @@ from matplotlib.pyplot import imread  as _imread
 import logging
 import zipfile
 import pathlib
+from io import BytesIO
 #from . import options
 
 # Soft imports for obscure or heavy modules
@@ -97,9 +98,9 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
             n_channels = 4
         im = np.array(pil_image.getdata()).reshape(pil_image.size[1], pil_image.size[0], n_channels)
     if loader=='opencv':
-        im = cv2.imread(fpath)
+        im = cv2.imread(fpath, cv2.IMREAD_UNCHANGED)
         if mode in ['RGB', 'RGBA']:
-            im = im[...,::-1]
+            im[:,:,:3] = im[...,2::-1]
     if mode=='RGB':
         if np.ndim(im)==3 and im.shape[2]==4:
             # Clip alpha channel
@@ -114,7 +115,18 @@ def load_image(fpath, mode='RGB', loader='matplotlib'):
             raise Exception("2D only image or something error error no good handle me")
     elif mode=='RGBA':
         # Need to add alpha channel if it doesn't exist.
-       raise NotImplementedError("RGBA image loading not ready yet.")
+        if np.ndim(im)==3 and im.shape[2]==4:
+            # Fine, do nothing
+            pass
+        elif np.ndim(im)==3 and im.shape[2]==3:
+            # Add alpha channel
+            if im.dtype in (np.uint8,):
+                alpha = (np.ones(im.shape[:2] + (1,)) * 255).astype(np.uint8)
+            else:
+                alpha = np.ones(im.shape[:2] + (1,), dtype=im.dtype)
+            im = np.dstack([im, alpha])
+        else:
+            raise Exception("Image is of strange dimension, did not know what to do for alpha channel")
     return im
 
 
@@ -773,7 +785,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
         # Parse file type
         fn, ext = os.path.splitext(fname)
         if ext in HDF_EXTENSIONS:
-            out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx)
+            out = _load_hdf_array(fpath, variable_name=variable_name, idx=idx, **kwargs)
         elif ext in ('.mat',):
             out = _load_mat_array(fpath, variable_name=variable_name, idx=idx)
         elif ext in MOVIE_EXTENSIONS:
@@ -797,7 +809,7 @@ def load_array(fpath, variable_name=None, idx=None, random_wait=0, cache_dir=Non
     return out
 
 
-def _load_hdf_array(fpath, variable_name=None, idx=None, verbose=False):
+def _load_hdf_array(fpath, variable_name=None, idx=None, verbose=False, size=None, resize_opt=None, interpolation=None, map_pil_images=False, ):
     """Load array from hdf file
 
     Parameters
@@ -808,9 +820,23 @@ def _load_hdf_array(fpath, variable_name=None, idx=None, verbose=False):
         variable name to load
     idx : tuple
         (start_index, end_index) to load - only works on FIRST DIMENSION for now.
+    size : scalar, tuple, or None
+        size to which to resize image arrays. Uses resizing function specified in `resize_opt`
+    resize_opt : str
+        one of 'opencv','imageio', or 'none', chooses what function to use to resize image
+        arrays. string `resize_opt` is an index for RESIZE_DICT, which keeps track of resizing
+        functions (see file_io.RESIZE_DICT)
+    map_pil_images : bool
+        option specifically for LAION-fMRI stimuli which are stored as JPEG bytes rather than arrays. 
+        (a bit over-specific perhaps, just leave it alone if you are not working with that dataset)
+    interpolation : cv2 option for interpolation
+        only relevant if `resize_opt` is 'opencv'; can be e.g. cv2.INTER_AREA or other (see opencv)
     """
     if isinstance(fpath, pathlib.Path):
         fpath = str(fpath)
+    if size is not None:
+        assert resize_opt is not None, 'Must specify `resize_opt` to resize array data'
+        resize_fn = RESIZE_FUNCTIONS[resize_opt]
     with warnings.catch_warnings():
         # Ignore bullshit h5py/tables warning 
         # warnings.simplefilter("ignore")
@@ -828,6 +854,14 @@ def _load_hdf_array(fpath, variable_name=None, idx=None, verbose=False):
             else:
                 st, fin = idx
                 out = hf[variable_name][st:fin]
+            if map_pil_images:
+                out = list(out)
+                for j in range(len(out)):
+                    pix = np.asarray(Image.open(BytesIO(out[j])))[:,:,:3] # Discard alpha channel
+                    if size is not None:
+                        pix = resize_fn(pix, size, interpolation=interpolation)
+                    out[j] = pix
+                out = np.asarray(out)
     return out
 
     

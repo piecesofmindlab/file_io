@@ -1,9 +1,9 @@
 numpy
+scipy
 matplotlib
 pillow
 tqdm
 h5py
-json
 imageio
 opencv-python
 msgpack-python
