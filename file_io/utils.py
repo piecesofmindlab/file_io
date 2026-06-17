@@ -1345,7 +1345,7 @@ if torch_available:
             img = self.imgs[index]
             if np.ndim(img)==2:
                 img = np.tile(img[:,:,np.newaxis], [1,1,3])
-            if (img.dtype == np.float_) and (img.max() <= 1.0):
+            if (img.dtype == np.float64) and (img.max() <= 1.0):
                 img = (img * 255).astype(np.uint8)
             img = Image.fromarray(img)
             target = self.classes[index]
